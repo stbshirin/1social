@@ -15,6 +15,8 @@ import { AdminDashboard } from './components/admin/AdminDashboard';
 import { CallModal } from './components/calling/CallModal';
 import { ReportModal } from './components/modals/ReportModal';
 import { CreatePostModal } from './components/modals/CreatePostModal';
+import { OfflineBanner } from './components/pwa/OfflineBanner';
+import { PWAUpdatePrompt } from './components/pwa/PWAUpdatePrompt';
 import { UserProfile } from './types';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from './firebase/config';
@@ -231,6 +233,10 @@ const MainApp: React.FC = () => {
       {showCreatePostModal && (
         <CreatePostModal onClose={() => setShowCreatePostModal(false)} />
       )}
+
+      {/* PWA Offline Banner & Update Prompt */}
+      <OfflineBanner />
+      <PWAUpdatePrompt />
     </div>
   );
 };

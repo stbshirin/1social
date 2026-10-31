@@ -2,17 +2,31 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
     <title>1 social - Social Media, Messenger & WebRTC Calling</title>
     <meta name="description" content="1 social - Modern social network and real-time messenger with WebRTC audio & video calling, feed, and profiles." />
+    
+    <!-- PWA Primary Color and Status Bar -->
+    <meta name="theme-color" content="#4f46e5" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="1social" />
+    
+    <!-- Icons & Manifest -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <!-- Open Graph & Social Cards -->
     <meta property="og:title" content="1 social - Social Media, Messenger & WebRTC Calling" />
     <meta property="og:description" content="1 social - Modern social network and real-time messenger with WebRTC audio & video calling, feed, and profiles." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
   </head>
-  <body>
+  <body className="bg-slate-950 text-slate-100 antialiased selection:bg-indigo-500 selection:text-white">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

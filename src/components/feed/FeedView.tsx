@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthContext';
 import { Post } from '../../types';
 import { CreatePostCard } from './CreatePostCard';
 import { PostCard } from './PostCard';
+import { PWAInstallBanner } from '../pwa/PWAInstallBanner';
 import { Sparkles, TrendingUp, Users } from 'lucide-react';
 
 interface FeedViewProps {
@@ -78,6 +79,9 @@ export const FeedView: React.FC<FeedViewProps> = ({
           </button>
         </div>
       )}
+
+      {/* PWA Install Banner */}
+      <PWAInstallBanner />
 
       {/* Create Post Widget */}
       <CreatePostCard />

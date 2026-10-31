@@ -1,6 +1,7 @@
 import React from 'react';
 import { Sparkles, Bell, MessageSquare, Sun, Moon, Shield, Search } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { PWAInstallButton } from '../pwa/PWAInstallButton';
 
 interface NavbarProps {
   activeTab: string;
@@ -62,6 +63,9 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Right Header Action Controls */}
         <div className="flex items-center gap-2 sm:gap-3">
+          {/* In-app PWA Install Button */}
+          <PWAInstallButton variant="navbar" />
+
           {/* Dark / Light Toggle */}
           <button
             onClick={() => setIsDark(!isDark)}
