@@ -77,7 +77,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           username: generatedUsername,
           photoURL: user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`,
           coverURL: 'https://images.unsplash.com/photo-1707343843437-caacff5cfa74?w=1200&auto=format&fit=crop&q=80',
-          bio: 'Hey there! I am using PulseWave.',
+          bio: 'Hey there! I am using 1 social.',
           location: '',
           website: '',
           role: isUserAdmin ? 'admin' : 'user',

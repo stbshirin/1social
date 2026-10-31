@@ -33,11 +33,11 @@ export const Navbar: React.FC<NavbarProps> = ({
           onClick={() => setActiveTab('feed')}
           className="flex items-center gap-2.5 cursor-pointer select-none group"
         >
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 text-white flex items-center justify-center shadow-md shadow-indigo-500/20 group-hover:scale-105 transition-transform">
-            <Sparkles size={20} />
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 text-white font-black text-xl flex items-center justify-center shadow-md shadow-indigo-500/20 group-hover:scale-105 transition-transform">
+            1
           </div>
           <span className="text-xl font-black tracking-tight text-slate-900 dark:text-white hidden sm:inline">
-            Pulse<span className="text-indigo-600 dark:text-indigo-400">Wave</span>
+            1 <span className="text-indigo-600 dark:text-indigo-400">social</span>
           </span>
         </div>
 

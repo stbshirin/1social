@@ -126,7 +126,7 @@ export const AdminDashboard: React.FC = () => {
             <Shield size={24} />
           </div>
           <div>
-            <h1 className="text-xl font-bold">PulseWave Admin & Moderation Center</h1>
+            <h1 className="text-xl font-bold">1 social Admin & Moderation Center</h1>
             <p className="text-xs text-indigo-200/70">
               Logged in as verified administrator ({currentUser?.email})
             </p>

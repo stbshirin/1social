@@ -63,10 +63,10 @@ export const AuthModal: React.FC = () => {
       <div className="w-full max-w-md bg-slate-900/90 border border-slate-800 rounded-3xl p-7 sm:p-9 shadow-2xl backdrop-blur-xl relative z-10">
         {/* Brand Header */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-500 text-white shadow-lg shadow-indigo-500/30 mb-4">
-            <Sparkles size={28} />
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-500 text-white font-black text-2xl shadow-lg shadow-indigo-500/30 mb-4">
+            1
           </div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">PulseWave</h1>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">1 social</h1>
           <p className="text-sm text-slate-400 mt-1">
             Social Media, Messenger & WebRTC Calling
           </p>
@@ -250,7 +250,7 @@ export const AuthModal: React.FC = () => {
             ) : (
               <>
                 <span>
-                  {mode === 'login' && 'Sign In to PulseWave'}
+                  {mode === 'login' && 'Sign In to 1 social'}
                   {mode === 'signup' && 'Create Account'}
                   {mode === 'forgot' && 'Send Reset Link'}
                 </span>

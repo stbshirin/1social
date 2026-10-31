@@ -70,10 +70,10 @@ const MainApp: React.FC = () => {
   if (loading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-950 text-white">
-        <div className="w-14 h-14 rounded-2xl bg-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-500/30 animate-pulse mb-4">
-          <Sparkles size={28} />
+        <div className="w-14 h-14 rounded-2xl bg-indigo-600 font-black text-2xl flex items-center justify-center shadow-lg shadow-indigo-500/30 animate-pulse mb-4">
+          1
         </div>
-        <p className="text-sm font-semibold text-slate-300">Loading PulseWave...</p>
+        <p className="text-sm font-semibold text-slate-300">Loading 1 social...</p>
       </div>
     );
   }

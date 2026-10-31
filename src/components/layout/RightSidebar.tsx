@@ -69,7 +69,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ onStartChat, onSelec
   };
 
   const trendingTopics = [
-    { tag: '#PulseWaveLive', count: '14.2K posts' },
+    { tag: '#1social', count: '14.2K posts' },
     { tag: '#WebRTC', count: '9.8K posts' },
     { tag: '#ReactTypeScript', count: '8.1K posts' },
     { tag: '#Innovation', count: '6.4K posts' },
@@ -197,7 +197,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ onStartChat, onSelec
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
             <Flame size={16} className="text-rose-500" />
-            Trending on PulseWave
+            Trending on 1 social
           </h3>
           <TrendingUp size={16} className="text-slate-400" />
         </div>

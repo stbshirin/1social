@@ -136,7 +136,7 @@ export const FeedView: React.FC<FeedViewProps> = ({
           </div>
           <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1">No posts found</h3>
           <p className="text-xs text-slate-400 max-w-sm mx-auto">
-            Be the very first one to publish a post, photo, or thought to the PulseWave social network!
+            Be the very first one to publish a post, photo, or thought to the 1 social network!
           </p>
         </div>
       ) : (

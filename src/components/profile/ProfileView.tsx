@@ -272,7 +272,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
 
           <p className="text-sm text-slate-700 dark:text-slate-300 max-w-xl">
-            {profile.bio || 'PulseWave network member.'}
+            {profile.bio || '1 social network member.'}
           </p>
 
           {/* Location & Links */}

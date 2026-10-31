@@ -213,7 +213,7 @@ export const CallModal: React.FC = () => {
               {activeCall.calleeName || activeCall.callerName}
             </h2>
             <p className="text-emerald-400 text-sm font-medium mb-1">
-              {activeCall.status === 'accepted' ? 'PulseWave HD Audio Call' : 'Connecting Audio Call...'}
+              {activeCall.status === 'accepted' ? '1 social HD Audio Call' : 'Connecting Audio Call...'}
             </p>
             <p className="text-slate-400 text-xs font-mono">
               {formatDuration(callDuration)}
