@@ -1,0 +1,160 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email == 'stb.shirin@gmail.com')
+      );
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Separate SocialApp Users Collection
+    match /socialApp_users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(userId) && incoming().uid == userId;
+      allow update: if isSignedIn() && (
+        (isOwner(userId) && incoming().uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'username', 'photoURL', 'coverURL', 'bio', 'location', 'website', 'updatedAt'])) ||
+        (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['isSuspended', 'role', 'updatedAt']))
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Hierarchical socialApp Document & Subcollections
+    match /socialApp/{docId} {
+      allow read, write: if isSignedIn();
+
+      match /users/{userId} {
+        allow read: if isSignedIn();
+        allow create: if isOwner(userId) && incoming().uid == userId;
+        allow update: if isSignedIn() && (
+          (isOwner(userId) && incoming().uid == userId) ||
+          isAdmin()
+        );
+        allow delete: if isAdmin();
+      }
+    }
+
+    // Preserved Legacy Users Collection: Read-only protection to prevent modifying old app users
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow write: if false; // Preserves legacy profiles from alteration or deletion
+    }
+
+    // Admins Collection
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Posts Collection
+    match /posts/{postId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && incoming().authorId == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (existing().authorId == request.auth.uid && incoming().authorId == request.auth.uid) ||
+        isAdmin() ||
+        incoming().diff(existing()).affectedKeys().hasOnly(['likesCount', 'commentsCount', 'sharesCount'])
+      );
+      allow delete: if isSignedIn() && (existing().authorId == request.auth.uid || isAdmin());
+    }
+
+    // Likes Collection
+    match /likes/{likeId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && incoming().userId == request.auth.uid;
+      allow delete: if isSignedIn() && existing().userId == request.auth.uid;
+    }
+
+    // Comments Collection
+    match /comments/{commentId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && incoming().authorId == request.auth.uid;
+      allow update: if isSignedIn() && existing().authorId == request.auth.uid;
+      allow delete: if isSignedIn() && (existing().authorId == request.auth.uid || isAdmin());
+    }
+
+    // Follows Collection
+    match /follows/{followId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && incoming().followerId == request.auth.uid;
+      allow delete: if isSignedIn() && existing().followerId == request.auth.uid;
+    }
+
+    // Conversations Collection
+    match /conversations/{conversationId} {
+      allow read: if isSignedIn() && (request.auth.uid in resource.data.participants || isAdmin());
+      allow create: if isSignedIn() && request.auth.uid in incoming().participants;
+      allow update: if isSignedIn() && (request.auth.uid in resource.data.participants || isAdmin());
+      allow delete: if isAdmin();
+
+      // Messages Subcollection
+      match /messages/{messageId} {
+        allow read: if isSignedIn() && (request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants || isAdmin());
+        allow create: if isSignedIn() && incoming().senderId == request.auth.uid && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants;
+        allow update: if isSignedIn() && (incoming().diff(existing()).affectedKeys().hasOnly(['seenBy']));
+        allow delete: if isSignedIn() && (existing().senderId == request.auth.uid || isAdmin());
+      }
+    }
+
+    // WebRTC Calls Collection
+    match /calls/{callId} {
+      allow read: if isSignedIn() && (
+        request.auth.uid == resource.data.callerId ||
+        request.auth.uid == resource.data.calleeId ||
+        isAdmin()
+      );
+      allow create: if isSignedIn() && incoming().callerId == request.auth.uid;
+      allow update: if isSignedIn() && (
+        request.auth.uid == resource.data.callerId ||
+        request.auth.uid == resource.data.calleeId ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (request.auth.uid == resource.data.callerId || isAdmin());
+
+      // WebRTC ICE Candidates Subcollection
+      match /candidates/{candidateId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && incoming().senderId == request.auth.uid;
+        allow delete: if isSignedIn();
+      }
+    }
+
+    // Notifications Collection
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && resource.data.recipientId == request.auth.uid;
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && resource.data.recipientId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow delete: if isSignedIn() && (resource.data.recipientId == request.auth.uid || isAdmin());
+    }
+
+    // Reports Collection
+    match /reports/{reportId} {
+      allow read: if isSignedIn() && (resource.data.reporterId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && incoming().reporterId == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+  }
+}
