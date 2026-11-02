@@ -185,6 +185,7 @@ const MainApp: React.FC = () => {
               targetUserId={targetProfileId}
               onOpenReportModal={(id) => setReportModalData({ id, type: 'user' })}
               onStartChat={handleStartChatWithUser}
+              onViewAuthorProfile={handleViewUserProfile}
             />
           )}
 

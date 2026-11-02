@@ -14,6 +14,8 @@ import {
   X,
   UserCheck,
   UserPlus,
+  User as UserIcon,
+  ArrowLeft,
 } from 'lucide-react';
 import {
   collection,
@@ -22,39 +24,52 @@ import {
   onSnapshot,
   doc,
   getDoc,
+  getDocs,
   setDoc,
   deleteDoc,
-  serverTimestamp,
 } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../context/AuthContext';
 import { useCall } from '../../context/CallContext';
 import { UserProfile, Post, Follow } from '../../types';
 import { PostCard } from '../feed/PostCard';
-import { getSocialUserDocRef } from '../../services/userService';
+import { getSocialUserDocRef, fetchSocialUserProfile } from '../../services/userService';
 
 interface ProfileViewProps {
   targetUserId?: string | null;
   onOpenReportModal: (targetId: string) => void;
   onStartChat: (user: UserProfile) => void;
+  onViewAuthorProfile?: (userId: string) => void;
 }
 
 export const ProfileView: React.FC<ProfileViewProps> = ({
   targetUserId,
   onOpenReportModal,
   onStartChat,
+  onViewAuthorProfile,
 }) => {
   const { currentUser, userProfile: myProfile, updateUserProfile } = useAuth();
   const { initiateCall } = useCall();
 
-  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const isMe = !targetUserId || targetUserId === currentUser?.uid;
+  const currentUid = targetUserId || currentUser?.uid;
+
+  const [profile, setProfile] = useState<UserProfile | null>(isMe ? myProfile : null);
+  const [loadingProfile, setLoadingProfile] = useState<boolean>(!isMe || !myProfile);
+  const [profileNotFound, setProfileNotFound] = useState<boolean>(false);
+
   const [activeTab, setActiveTab] = useState<'posts' | 'media' | 'likes'>('posts');
   const [posts, setPosts] = useState<Post[]>([]);
   const [followersCount, setFollowersCount] = useState(0);
   const [followingCount, setFollowingCount] = useState(0);
   const [isFollowing, setIsFollowing] = useState(false);
 
-  // Edit Profile Modal state
+  // Social Lists Modal (Followers / Following)
+  const [followModalType, setFollowModalType] = useState<'followers' | 'following' | null>(null);
+  const [followListUsers, setFollowListUsers] = useState<UserProfile[]>([]);
+  const [loadingFollowList, setLoadingFollowList] = useState(false);
+
+  // Edit Profile Modal state (strictly for isMe)
   const [showEditModal, setShowEditModal] = useState(false);
   const [editName, setEditName] = useState('');
   const [editUsername, setEditUsername] = useState('');
@@ -65,14 +80,22 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [editCoverURL, setEditCoverURL] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const isMe = !targetUserId || targetUserId === currentUser?.uid;
-  const currentUid = targetUserId || currentUser?.uid;
-
-  // Load target profile
+  // Load target profile whenever currentUid changes
   useEffect(() => {
     if (!currentUid) return;
 
-    if (isMe && myProfile) {
+    let isMounted = true;
+    setProfileNotFound(false);
+
+    // If switching to another user's profile, immediately clear previous/stale profile
+    if (!isMe) {
+      setProfile(null);
+      setPosts([]);
+      setFollowersCount(0);
+      setFollowingCount(0);
+      setIsFollowing(false);
+      setLoadingProfile(true);
+    } else if (myProfile) {
       setProfile(myProfile);
       setEditName(myProfile.displayName || '');
       setEditUsername(myProfile.username || '');
@@ -81,20 +104,89 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       setEditWebsite(myProfile.website || '');
       setEditPhotoURL(myProfile.photoURL || '');
       setEditCoverURL(myProfile.coverURL || '');
-      const unsub = onSnapshot(
-        getSocialUserDocRef(currentUid),
-        (snap) => {
-          if (snap.exists()) {
-            const data = { id: snap.id, ...snap.data() } as UserProfile;
-            setProfile(data);
-          }
-        },
-        (error) => {
-          console.warn('Profile listener notice:', error?.message || error);
-        }
-      );
-      return () => unsub();
+      setLoadingProfile(false);
     }
+
+    // Set up real-time listener for currentUid document
+    const userDocRef = getSocialUserDocRef(currentUid);
+    const unsub = onSnapshot(
+      userDocRef,
+      async (snap) => {
+        if (!isMounted) return;
+
+        if (snap.exists()) {
+          const data = { id: snap.id, ...snap.data() } as UserProfile;
+          setProfile(data);
+          setProfileNotFound(false);
+          setLoadingProfile(false);
+
+          if (isMe) {
+            setEditName(data.displayName || '');
+            setEditUsername(data.username || '');
+            setEditBio(data.bio || '');
+            setEditLocation(data.location || '');
+            setEditWebsite(data.website || '');
+            setEditPhotoURL(data.photoURL || '');
+            setEditCoverURL(data.coverURL || '');
+          }
+        } else {
+          // If not in direct collection yet, try fallback service
+          try {
+            const fallback = await fetchSocialUserProfile(currentUid);
+            if (!isMounted) return;
+
+            if (fallback) {
+              setProfile(fallback);
+              setProfileNotFound(false);
+              setLoadingProfile(false);
+            } else {
+              // Check legacy users collection as last fallback
+              const legacySnap = await getDoc(doc(db, 'users', currentUid));
+              if (!isMounted) return;
+
+              if (legacySnap.exists()) {
+                const lData = legacySnap.data() as any;
+                const converted: UserProfile = {
+                  id: currentUid,
+                  uid: currentUid,
+                  email: lData.email || '',
+                  displayName: lData.displayName || lData.name || 'User',
+                  username: lData.username || `user_${currentUid.slice(0, 5)}`,
+                  photoURL: lData.photoURL || lData.avatarUrl || '',
+                  coverURL: lData.coverURL || '',
+                  bio: lData.bio || '',
+                  location: lData.location || '',
+                  website: lData.website || '',
+                  role: 'user',
+                  createdAt: lData.createdAt || new Date().toISOString(),
+                  updatedAt: lData.updatedAt || new Date().toISOString(),
+                };
+                setProfile(converted);
+                setProfileNotFound(false);
+              } else {
+                setProfileNotFound(true);
+              }
+              setLoadingProfile(false);
+            }
+          } catch (err) {
+            if (!isMounted) return;
+            console.warn('Profile fallback fetch notice:', err);
+            setProfileNotFound(true);
+            setLoadingProfile(false);
+          }
+        }
+      },
+      (error) => {
+        if (!isMounted) return;
+        console.warn('Profile listener notice:', error?.message || error);
+        setLoadingProfile(false);
+      }
+    );
+
+    return () => {
+      isMounted = false;
+      unsub();
+    };
   }, [currentUid, isMe, myProfile]);
 
   // Load posts by this user
@@ -115,9 +207,31 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     return () => unsub();
   }, [currentUid]);
 
+  // Real-time listener for whether current user is following this user
+  useEffect(() => {
+    if (!currentUid || !currentUser || isMe) {
+      setIsFollowing(false);
+      return;
+    }
+
+    const followDocId = `${currentUser.uid}_${currentUid}`;
+    const followRef = doc(db, 'follows', followDocId);
+    const unsub = onSnapshot(
+      followRef,
+      (snap) => {
+        setIsFollowing(snap.exists());
+      },
+      (error) => {
+        console.warn('Follow state listener notice:', error?.message || error);
+      }
+    );
+
+    return () => unsub();
+  }, [currentUid, currentUser?.uid, isMe]);
+
   // Load follower and following counts
   useEffect(() => {
-    if (!currentUid || !currentUser) return;
+    if (!currentUid) return;
 
     // Followers of this user
     const qFollowers = query(collection(db, 'follows'), where('followingId', '==', currentUid));
@@ -125,9 +239,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       qFollowers,
       (snap) => {
         setFollowersCount(snap.size);
-        if (!isMe) {
-          setIsFollowing(snap.docs.some((d) => (d.data() as Follow).followerId === currentUser.uid));
-        }
       },
       (error) => {
         console.warn('Followers listener notice:', error?.message || error);
@@ -150,27 +261,92 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       unsubFollowers();
       unsubFollowing();
     };
-  }, [currentUid, currentUser, isMe]);
+  }, [currentUid]);
 
+  // Toggle follow/unfollow
   const toggleFollow = async () => {
     if (!currentUser || !currentUid || isMe) return;
     const followDocId = `${currentUser.uid}_${currentUid}`;
     const followRef = doc(db, 'follows', followDocId);
 
     if (isFollowing) {
-      await deleteDoc(followRef);
+      setIsFollowing(false);
+      setFollowersCount((prev) => Math.max(0, prev - 1));
+      try {
+        await deleteDoc(followRef);
+      } catch (e) {
+        console.warn('Error deleting follow record:', e);
+      }
     } else {
-      await setDoc(followRef, {
-        id: followDocId,
-        followerId: currentUser.uid,
-        followingId: currentUid,
-        createdAt: new Date().toISOString(),
-      });
+      setIsFollowing(true);
+      setFollowersCount((prev) => prev + 1);
+      try {
+        await setDoc(followRef, {
+          id: followDocId,
+          followerId: currentUser.uid,
+          followingId: currentUid,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (e) {
+        console.warn('Error setting follow record:', e);
+      }
     }
   };
 
+  // Open modal for followers or following list
+  const openFollowModal = async (type: 'followers' | 'following') => {
+    setFollowModalType(type);
+    setLoadingFollowList(true);
+    setFollowListUsers([]);
+
+    try {
+      const q =
+        type === 'followers'
+          ? query(collection(db, 'follows'), where('followingId', '==', currentUid))
+          : query(collection(db, 'follows'), where('followerId', '==', currentUid));
+
+      const snap = await getDocs(q);
+      const userIds = snap.docs.map((d) => {
+        const data = d.data();
+        return type === 'followers' ? data.followerId : data.followingId;
+      });
+
+      if (userIds.length === 0) {
+        setFollowListUsers([]);
+        setLoadingFollowList(false);
+        return;
+      }
+
+      // Fetch user profile previews for these userIds
+      const fetched: UserProfile[] = [];
+      for (const uid of userIds) {
+        try {
+          const directRef = getSocialUserDocRef(uid);
+          const uSnap = await getDoc(directRef);
+          if (uSnap.exists()) {
+            fetched.push({ id: uSnap.id, ...uSnap.data() } as UserProfile);
+          } else {
+            const fallback = await fetchSocialUserProfile(uid);
+            if (fallback) fetched.push(fallback);
+          }
+        } catch (e) {
+          console.warn('Error fetching follow list user:', e);
+        }
+      }
+
+      setFollowListUsers(fetched);
+    } catch (err) {
+      console.warn('Error loading follow list:', err);
+    } finally {
+      setLoadingFollowList(false);
+    }
+  };
+
+  // Save profile changes (strictly for authenticated user's own profile)
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isMe) return;
+
     setSaving(true);
     try {
       await updateUserProfile({
@@ -190,12 +366,42 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     }
   };
 
-  if (!profile) {
+  // User Profile Not Found UI
+  if (profileNotFound) {
     return (
-      <div className="flex items-center justify-center min-h-[50vh]">
-        <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+      <div className="w-full max-w-xl mx-auto py-16 px-4 text-center animate-in fade-in duration-200">
+        <div className="w-16 h-16 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center mx-auto mb-4">
+          <UserIcon size={32} />
+        </div>
+        <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">User Not Found</h3>
+        <p className="text-xs text-slate-400 max-w-sm mx-auto mb-6">
+          This user profile could not be found or has not been created yet in 1 social.
+        </p>
+        {onViewAuthorProfile && currentUser && (
+          <button
+            onClick={() => onViewAuthorProfile(currentUser.uid)}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-md transition-colors cursor-pointer"
+          >
+            <ArrowLeft size={16} />
+            <span>Go to My Profile</span>
+          </button>
+        )}
       </div>
     );
+  }
+
+  // Profile Loading Spinner
+  if (loadingProfile && !profile) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3">
+        <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+        <span className="text-xs text-slate-400 font-medium">Loading profile...</span>
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return null;
   }
 
   const mediaPosts = posts.filter((p) => p.mediaType !== 'none' && p.mediaUrl);
@@ -228,7 +434,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             <span className="absolute bottom-1 right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-white dark:border-slate-900" />
           </div>
 
-          {/* Action Buttons: Edit or Follow + Direct Call */}
+          {/* Action Buttons: Edit (for me) or Follow + Chat + Call (for other users) */}
           <div className="flex items-center gap-2">
             {isMe ? (
               <button
@@ -244,7 +450,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                   onClick={toggleFollow}
                   className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold shadow-sm transition-all cursor-pointer ${
                     isFollowing
-                      ? 'bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200'
+                      ? 'bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 hover:bg-rose-50 dark:hover:bg-rose-950/30 hover:text-rose-600'
                       : 'bg-indigo-600 hover:bg-indigo-500 text-white'
                   }`}
                 >
@@ -324,16 +530,30 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             </div>
           </div>
 
-          {/* Social Stats: Following and Followers */}
+          {/* Social Stats: Clickable Following and Followers lists */}
           <div className="flex items-center justify-center sm:justify-start gap-6 pt-3">
-            <div className="flex items-center gap-1.5 text-xs sm:text-sm">
-              <span className="font-bold text-slate-900 dark:text-white">{followingCount}</span>
+            <button
+              onClick={() => openFollowModal('following')}
+              className="flex items-center gap-1.5 text-xs sm:text-sm hover:opacity-80 transition-opacity cursor-pointer group"
+              title="View following"
+            >
+              <span className="font-bold text-slate-900 dark:text-white group-hover:text-indigo-500">
+                {followingCount}
+              </span>
               <span className="text-slate-400">Following</span>
-            </div>
-            <div className="flex items-center gap-1.5 text-xs sm:text-sm">
-              <span className="font-bold text-slate-900 dark:text-white">{followersCount}</span>
+            </button>
+
+            <button
+              onClick={() => openFollowModal('followers')}
+              className="flex items-center gap-1.5 text-xs sm:text-sm hover:opacity-80 transition-opacity cursor-pointer group"
+              title="View followers"
+            >
+              <span className="font-bold text-slate-900 dark:text-white group-hover:text-indigo-500">
+                {followersCount}
+              </span>
               <span className="text-slate-400">Followers</span>
-            </div>
+            </button>
+
             <div className="flex items-center gap-1.5 text-xs sm:text-sm">
               <span className="font-bold text-slate-900 dark:text-white">{posts.length}</span>
               <span className="text-slate-400">Posts</span>
@@ -380,6 +600,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 key={post.id}
                 post={post}
                 onOpenReportModal={onOpenReportModal}
+                onViewAuthorProfile={onViewAuthorProfile}
               />
             ))
           )}
@@ -413,8 +634,62 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         </div>
       )}
 
-      {/* Edit Profile Modal */}
-      {showEditModal && (
+      {/* Followers / Following List Modal */}
+      {followModalType && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 animate-in fade-in duration-150">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-sm w-full p-5 shadow-2xl">
+            <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-200 dark:border-slate-800">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white capitalize">
+                {followModalType}
+              </h3>
+              <button
+                onClick={() => setFollowModalType(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="max-h-72 overflow-y-auto space-y-2">
+              {loadingFollowList ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="w-6 h-6 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : followListUsers.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-6">
+                  No {followModalType} yet.
+                </p>
+              ) : (
+                followListUsers.map((u) => (
+                  <div
+                    key={u.uid}
+                    onClick={() => {
+                      setFollowModalType(null);
+                      onViewAuthorProfile?.(u.uid);
+                    }}
+                    className="flex items-center gap-3 p-2.5 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  >
+                    <img
+                      src={u.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.uid}`}
+                      alt={u.displayName}
+                      className="w-10 h-10 rounded-full object-cover border border-slate-200 dark:border-slate-700"
+                    />
+                    <div className="truncate">
+                      <p className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                        {u.displayName}
+                      </p>
+                      <p className="text-xs text-slate-400 truncate">@{u.username}</p>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Profile Modal (Strictly for Own Profile) */}
+      {showEditModal && isMe && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-lg w-full p-6 shadow-2xl">
             <div className="flex items-center justify-between mb-4">

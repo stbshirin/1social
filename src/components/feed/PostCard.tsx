@@ -456,11 +456,15 @@ export const PostCard: React.FC<PostCardProps> = ({
                   <img
                     src={c.authorPhotoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${c.authorId}`}
                     alt={c.authorName}
-                    className="w-8 h-8 rounded-full object-cover shrink-0 border border-slate-200 dark:border-slate-700"
+                    onClick={() => onViewAuthorProfile?.(c.authorId)}
+                    className="w-8 h-8 rounded-full object-cover shrink-0 border border-slate-200 dark:border-slate-700 cursor-pointer hover:ring-2 hover:ring-indigo-500 transition-all"
                   />
                   <div className="flex-1 bg-slate-50 dark:bg-slate-800/60 p-3 rounded-2xl">
                     <div className="flex items-center justify-between mb-1">
-                      <div className="flex items-center gap-1.5">
+                      <div
+                        onClick={() => onViewAuthorProfile?.(c.authorId)}
+                        className="flex items-center gap-1.5 cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400"
+                      >
                         <span className="text-xs font-bold text-slate-900 dark:text-slate-100">
                           {c.authorName}
                         </span>
