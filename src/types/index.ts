@@ -10,6 +10,9 @@ export interface UserProfile {
   location?: string;
   website?: string;
   role: 'user' | 'admin';
+  adminBadgeVisibility?: 'public' | 'followers' | 'only_me';
+  isOnline?: boolean;
+  lastSeen?: string | number;
   isSuspended?: boolean;
   createdAt?: string;
   updatedAt?: string;

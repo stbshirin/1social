@@ -18,6 +18,7 @@ import { CreatePostModal } from './components/modals/CreatePostModal';
 import { OfflineBanner } from './components/pwa/OfflineBanner';
 import { PWAUpdatePrompt } from './components/pwa/PWAUpdatePrompt';
 import { TokenServiceNotice } from './components/common/TokenServiceNotice';
+import { setupUserPresence } from './services/presenceService';
 import { UserProfile } from './types';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from './firebase/config';
@@ -45,6 +46,13 @@ const MainApp: React.FC = () => {
   useEffect(() => {
     document.documentElement.classList.add('dark');
   }, []);
+
+  // Set up Firebase Realtime Database Presence
+  useEffect(() => {
+    if (!currentUser?.uid) return;
+    const cleanupPresence = setupUserPresence(currentUser.uid);
+    return () => cleanupPresence();
+  }, [currentUser?.uid]);
 
   // Listen to unread notifications
   useEffect(() => {

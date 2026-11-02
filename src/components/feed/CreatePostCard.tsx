@@ -1,9 +1,10 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Image, Video, Sparkles, X, Send } from 'lucide-react';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../context/AuthContext';
 import { handleFirestoreError, OperationType } from '../../firebase/errorHandler';
+import { uploadPostMedia } from '../../services/storageService';
 
 interface CreatePostCardProps {
   onPostCreated?: () => void;
@@ -15,37 +16,67 @@ export const CreatePostCard: React.FC<CreatePostCardProps> = ({ onPostCreated })
   const [mediaType, setMediaType] = useState<'none' | 'image' | 'video'>('none');
   const [mediaUrl, setMediaUrl] = useState('');
   const [mediaPreview, setMediaPreview] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [showUrlInput, setShowUrlInput] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Clean up object URL when component unmounts
+  useEffect(() => {
+    return () => {
+      if (mediaPreview && mediaPreview.startsWith('blob:')) {
+        URL.revokeObjectURL(mediaPreview);
+      }
+    };
+  }, [mediaPreview]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setUploadError(null);
     const isVideo = file.type.startsWith('video/');
     const isImage = file.type.startsWith('image/');
 
     if (!isImage && !isVideo) {
-      alert('Please upload an image or video file.');
+      setUploadError('Please select a valid image or video file.');
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      setMediaPreview(dataUrl);
-      setMediaUrl(dataUrl);
-      setMediaType(isVideo ? 'video' : 'image');
-    };
-    reader.readAsDataURL(file);
+    if (isImage && file.size > 15 * 1024 * 1024) {
+      setUploadError('Image size exceeds 15MB limit.');
+      return;
+    }
+
+    if (isVideo && file.size > 50 * 1024 * 1024) {
+      setUploadError('Video size exceeds 50MB limit.');
+      return;
+    }
+
+    // Revoke previous blob url if exists
+    if (mediaPreview && mediaPreview.startsWith('blob:')) {
+      URL.revokeObjectURL(mediaPreview);
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    setSelectedFile(file);
+    setMediaPreview(objectUrl);
+    setMediaType(isVideo ? 'video' : 'image');
   };
 
   const clearMedia = () => {
+    if (mediaPreview && mediaPreview.startsWith('blob:')) {
+      URL.revokeObjectURL(mediaPreview);
+    }
     setMediaType('none');
     setMediaUrl('');
     setMediaPreview(null);
+    setSelectedFile(null);
+    setUploadProgress(null);
+    setUploadError(null);
     setShowUrlInput(false);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
@@ -54,18 +85,35 @@ export const CreatePostCard: React.FC<CreatePostCardProps> = ({ onPostCreated })
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser || !userProfile || (!content.trim() && !mediaUrl)) return;
+    if (!currentUser || !userProfile || (!content.trim() && !selectedFile && !mediaUrl)) return;
 
     setLoading(true);
+    setUploadError(null);
+
     try {
+      let finalMediaUrl = mediaUrl.trim();
+      let finalMediaType = mediaType;
+
+      // If a local file was selected, upload directly to Firebase Storage
+      if (selectedFile) {
+        setUploadProgress(1);
+        const uploadResult = await uploadPostMedia(
+          currentUser.uid,
+          selectedFile,
+          (percent) => setUploadProgress(percent)
+        );
+        finalMediaUrl = uploadResult.url;
+        finalMediaType = uploadResult.type;
+      }
+
       await addDoc(collection(db, 'posts'), {
         authorId: currentUser.uid,
         authorName: userProfile.displayName,
         authorUsername: userProfile.username,
         authorPhotoURL: userProfile.photoURL || '',
         content: content.trim(),
-        mediaType,
-        mediaUrl: mediaUrl.trim(),
+        mediaType: finalMediaType,
+        mediaUrl: finalMediaUrl,
         likesCount: 0,
         commentsCount: 0,
         sharesCount: 0,
@@ -77,10 +125,13 @@ export const CreatePostCard: React.FC<CreatePostCardProps> = ({ onPostCreated })
       setContent('');
       clearMedia();
       onPostCreated?.();
-    } catch (err) {
+    } catch (err: any) {
+      console.error('Error creating post:', err);
+      setUploadError(err.message || 'Failed to publish post. Please check connection and retry.');
       handleFirestoreError(err, OperationType.CREATE, 'posts');
     } finally {
       setLoading(false);
+      setUploadProgress(null);
     }
   };
 
@@ -163,6 +214,27 @@ export const CreatePostCard: React.FC<CreatePostCardProps> = ({ onPostCreated })
               onChange={handleFileUpload}
             />
 
+            {/* Upload Progress Bar */}
+            {uploadProgress !== null && (
+              <div className="mt-3">
+                <div className="flex items-center justify-between text-xs text-indigo-500 font-medium mb-1">
+                  <span>Uploading media to Firebase Storage...</span>
+                  <span>{uploadProgress}%</span>
+                </div>
+                <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-indigo-600 transition-all duration-200"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Error Message */}
+            {uploadError && (
+              <p className="mt-2 text-xs text-rose-500 font-medium">{uploadError}</p>
+            )}
+
             {/* Bottom Toolbar & Post Button */}
             <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between">
               <div className="flex items-center gap-1.5">
@@ -187,7 +259,7 @@ export const CreatePostCard: React.FC<CreatePostCardProps> = ({ onPostCreated })
 
               <button
                 type="submit"
-                disabled={loading || (!content.trim() && !mediaUrl)}
+                disabled={loading || (!content.trim() && !mediaUrl && !selectedFile)}
                 className="flex items-center gap-2 py-2 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs shadow-md shadow-indigo-600/20 transition-all cursor-pointer"
               >
                 {loading ? (

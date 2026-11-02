@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Edit3,
   MapPin,
@@ -16,6 +16,8 @@ import {
   UserPlus,
   User as UserIcon,
   ArrowLeft,
+  Camera,
+  Upload,
 } from 'lucide-react';
 import {
   collection,
@@ -34,6 +36,9 @@ import { useCall } from '../../context/CallContext';
 import { UserProfile, Post, Follow } from '../../types';
 import { PostCard } from '../feed/PostCard';
 import { getSocialUserDocRef, fetchSocialUserProfile } from '../../services/userService';
+import { uploadUserProfileImage } from '../../services/storageService';
+import { usePresence } from '../../services/presenceService';
+import { AdminBadge } from '../common/AdminBadge';
 
 interface ProfileViewProps {
   targetUserId?: string | null;
@@ -69,6 +74,19 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [followListUsers, setFollowListUsers] = useState<UserProfile[]>([]);
   const [loadingFollowList, setLoadingFollowList] = useState(false);
 
+  // Real-time online/offline presence for the active profile
+  const presence = usePresence(currentUid);
+
+  // Direct file upload state for avatar & cover photo
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [avatarProgress, setAvatarProgress] = useState<number | null>(null);
+  const [uploadingCover, setUploadingCover] = useState(false);
+  const [coverProgress, setCoverProgress] = useState<number | null>(null);
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
+
+  const avatarInputRef = useRef<HTMLInputElement | null>(null);
+  const coverInputRef = useRef<HTMLInputElement | null>(null);
+
   // Edit Profile Modal state (strictly for isMe)
   const [showEditModal, setShowEditModal] = useState(false);
   const [editName, setEditName] = useState('');
@@ -78,7 +96,63 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [editWebsite, setEditWebsite] = useState('');
   const [editPhotoURL, setEditPhotoURL] = useState('');
   const [editCoverURL, setEditCoverURL] = useState('');
+  const [editBadgeVisibility, setEditBadgeVisibility] = useState<'public' | 'followers' | 'only_me'>('public');
   const [saving, setSaving] = useState(false);
+
+  // Handle direct file uploads from the profile banner / avatar camera buttons
+  const handleDirectAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !currentUser) return;
+
+    setUploadingAvatar(true);
+    setAvatarProgress(1);
+    setUploadNotice(null);
+
+    try {
+      const downloadUrl = await uploadUserProfileImage(
+        currentUser.uid,
+        file,
+        'avatar',
+        (p) => setAvatarProgress(p)
+      );
+      await updateUserProfile({ photoURL: downloadUrl });
+      setEditPhotoURL(downloadUrl);
+    } catch (err: any) {
+      console.error('Avatar upload error:', err);
+      setUploadNotice(err.message || 'Avatar upload failed.');
+    } finally {
+      setUploadingAvatar(false);
+      setAvatarProgress(null);
+      if (avatarInputRef.current) avatarInputRef.current.value = '';
+    }
+  };
+
+  const handleDirectCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !currentUser) return;
+
+    setUploadingCover(true);
+    setCoverProgress(1);
+    setUploadNotice(null);
+
+    try {
+      const downloadUrl = await uploadUserProfileImage(
+        currentUser.uid,
+        file,
+        'cover',
+        (p) => setCoverProgress(p)
+      );
+      await updateUserProfile({ coverURL: downloadUrl });
+      setEditCoverURL(downloadUrl);
+    } catch (err: any) {
+      console.error('Cover upload error:', err);
+      setUploadNotice(err.message || 'Cover banner upload failed.');
+    } finally {
+      setUploadingCover(false);
+      setCoverProgress(null);
+      if (coverInputRef.current) coverInputRef.current.value = '';
+    }
+  };
 
   // Load target profile whenever currentUid changes
   useEffect(() => {
@@ -104,6 +178,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       setEditWebsite(myProfile.website || '');
       setEditPhotoURL(myProfile.photoURL || '');
       setEditCoverURL(myProfile.coverURL || '');
+      setEditBadgeVisibility(myProfile.adminBadgeVisibility || 'public');
       setLoadingProfile(false);
     }
 
@@ -128,6 +203,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             setEditWebsite(data.website || '');
             setEditPhotoURL(data.photoURL || '');
             setEditCoverURL(data.coverURL || '');
+            setEditBadgeVisibility(data.adminBadgeVisibility || 'public');
           }
         } else {
           // If not in direct collection yet, try fallback service
@@ -357,6 +433,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         website: editWebsite.trim(),
         photoURL: editPhotoURL.trim(),
         coverURL: editCoverURL.trim(),
+        adminBadgeVisibility: editBadgeVisibility,
       });
       setShowEditModal(false);
     } catch (e) {
@@ -408,8 +485,28 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
   return (
     <div className="w-full max-w-4xl mx-auto py-6 px-3 sm:px-6">
+      {/* Hidden file inputs for direct upload */}
+      {isMe && (
+        <>
+          <input
+            ref={avatarInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleDirectAvatarUpload}
+          />
+          <input
+            ref={coverInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleDirectCoverUpload}
+          />
+        </>
+      )}
+
       {/* Cover Header */}
-      <div className="relative h-44 sm:h-64 rounded-3xl overflow-hidden bg-slate-800 border border-slate-200 dark:border-slate-800 shadow-sm">
+      <div className="relative h-44 sm:h-64 rounded-3xl overflow-hidden bg-slate-800 border border-slate-200 dark:border-slate-800 shadow-sm group">
         <img
           src={
             profile.coverURL ||
@@ -419,19 +516,58 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           className="w-full h-full object-cover"
         />
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+
+        {/* Change Cover Button for current user */}
+        {isMe && (
+          <button
+            type="button"
+            onClick={() => coverInputRef.current?.click()}
+            disabled={uploadingCover}
+            className="absolute top-3 right-3 flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-black/60 hover:bg-black/80 backdrop-blur text-white text-xs font-semibold shadow-md transition-all cursor-pointer z-10"
+            title="Upload new cover banner"
+          >
+            <Camera size={14} />
+            <span>{uploadingCover ? `Uploading ${coverProgress || 0}%` : 'Change Cover'}</span>
+          </button>
+        )}
       </div>
+
+      {/* Upload notice if any */}
+      {uploadNotice && (
+        <div className="mt-2 p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400 text-xs text-center font-medium">
+          {uploadNotice}
+        </div>
+      )}
 
       {/* Profile Details Container */}
       <div className="relative px-4 sm:px-8 pb-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl -mt-16 z-10 shadow-sm mb-6">
         <div className="flex flex-col sm:flex-row items-center sm:items-end justify-between gap-4 -mt-14 sm:-mt-16 mb-4">
-          {/* Avatar with Status */}
+          {/* Avatar with Status & Direct Camera Trigger */}
           <div className="relative">
             <img
               src={profile.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${profile.uid}`}
               alt={profile.displayName}
               className="w-28 h-28 sm:w-32 sm:h-32 rounded-3xl object-cover border-4 border-white dark:border-slate-900 shadow-xl bg-slate-800"
             />
-            <span className="absolute bottom-1 right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-white dark:border-slate-900" />
+            {isMe && (
+              <button
+                type="button"
+                onClick={() => avatarInputRef.current?.click()}
+                disabled={uploadingAvatar}
+                className="absolute top-1 right-1 p-2 rounded-full bg-slate-900/80 hover:bg-slate-900 text-white shadow-lg transition-transform active:scale-95 cursor-pointer z-10"
+                title="Upload new profile picture"
+              >
+                <Camera size={14} />
+              </button>
+            )}
+
+            {/* Real-time Presence Indicator */}
+            <span
+              title={presence.isOnline ? 'Online now' : presence.lastSeenText}
+              className={`absolute bottom-1 right-1 w-4 h-4 rounded-full border-2 border-white dark:border-slate-900 ${
+                presence.isOnline ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-600'
+              }`}
+            />
           </div>
 
           {/* Action Buttons: Edit (for me) or Follow + Chat + Call (for other users) */}
@@ -486,19 +622,26 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
         </div>
 
-        {/* Name and Meta */}
+        {/* Name, Presence Text, and Admin Badge */}
         <div className="space-y-2 text-center sm:text-left">
           <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3">
             <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
               {profile.displayName}
             </h1>
             <span className="text-xs text-slate-400 font-mono">@{profile.username}</span>
-            {profile.role === 'admin' && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 w-fit mx-auto sm:mx-0">
-                <Shield size={12} />
-                Admin
-              </span>
-            )}
+            <AdminBadge user={profile} isFollower={isFollowing} size="sm" />
+          </div>
+
+          {/* Real-time status subtitle */}
+          <div className="flex items-center justify-center sm:justify-start gap-1.5 text-xs">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                presence.isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400 dark:bg-slate-500'
+              }`}
+            />
+            <span className={presence.isOnline ? 'text-emerald-500 font-semibold' : 'text-slate-400'}>
+              {presence.lastSeenText}
+            </span>
           </div>
 
           <p className="text-sm text-slate-700 dark:text-slate-300 max-w-xl">
@@ -768,29 +911,117 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                  Avatar Image URL
+              {/* Avatar Image with File Upload or Direct URL */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                  Profile Picture (Avatar)
                 </label>
-                <input
-                  type="url"
-                  value={editPhotoURL}
-                  onChange={(e) => setEditPhotoURL(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none"
-                />
+                <div className="flex gap-2 items-center">
+                  <input
+                    type="url"
+                    value={editPhotoURL}
+                    onChange={(e) => setEditPhotoURL(e.target.value)}
+                    placeholder="https://... or choose a local file"
+                    className="flex-1 px-3 py-2 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none"
+                  />
+                  <label className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 text-xs font-semibold cursor-pointer shrink-0 border border-indigo-200 dark:border-indigo-800">
+                    <Upload size={14} />
+                    <span>Upload</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file || !currentUser) return;
+                        setSaving(true);
+                        try {
+                          const url = await uploadUserProfileImage(currentUser.uid, file, 'avatar');
+                          setEditPhotoURL(url);
+                        } catch (err: any) {
+                          alert(err.message || 'Avatar upload failed');
+                        } finally {
+                          setSaving(false);
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                  Cover Banner URL
+              {/* Cover Banner with File Upload or Direct URL */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                  Cover Photo Banner
                 </label>
-                <input
-                  type="url"
-                  value={editCoverURL}
-                  onChange={(e) => setEditCoverURL(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none"
-                />
+                <div className="flex gap-2 items-center">
+                  <input
+                    type="url"
+                    value={editCoverURL}
+                    onChange={(e) => setEditCoverURL(e.target.value)}
+                    placeholder="https://... or choose a local file"
+                    className="flex-1 px-3 py-2 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none"
+                  />
+                  <label className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 text-xs font-semibold cursor-pointer shrink-0 border border-indigo-200 dark:border-indigo-800">
+                    <Upload size={14} />
+                    <span>Upload</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file || !currentUser) return;
+                        setSaving(true);
+                        try {
+                          const url = await uploadUserProfileImage(currentUser.uid, file, 'cover');
+                          setEditCoverURL(url);
+                        } catch (err: any) {
+                          alert(err.message || 'Cover upload failed');
+                        } finally {
+                          setSaving(false);
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
               </div>
+
+              {/* Admin Badge Visibility Privacy Setting (strictly for Admins) */}
+              {(profile.role === 'admin' || myProfile?.role === 'admin') && (
+                <div className="p-3.5 rounded-2xl bg-amber-500/5 border border-amber-500/20 space-y-2.5">
+                  <div className="flex items-center gap-2">
+                    <Shield size={16} className="text-amber-500" />
+                    <span className="text-xs font-bold text-slate-900 dark:text-white">
+                      Admin Badge Privacy
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Choose who can see your Administrator badge across the app (Profile, Feed, Comments, Explore).
+                  </p>
+                  <div className="grid grid-cols-3 gap-2 pt-1">
+                    {[
+                      { value: 'public', label: 'Public', desc: 'Everyone' },
+                      { value: 'followers', label: 'Followers', desc: 'Followers only' },
+                      { value: 'only_me', label: 'Only Me', desc: 'Private' },
+                    ].map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => setEditBadgeVisibility(opt.value as any)}
+                        className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
+                          editBadgeVisibility === opt.value
+                            ? 'border-amber-500 bg-amber-500/10 text-amber-500 ring-1 ring-amber-500'
+                            : 'border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                        }`}
+                      >
+                        <div className="text-xs font-bold">{opt.label}</div>
+                        <div className="text-[10px] opacity-75">{opt.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="pt-2 flex justify-end gap-2">
                 <button
