@@ -8,9 +8,35 @@ export interface BeforeInstallPromptEvent extends Event {
 const DISMISS_KEY = '1social_pwa_banner_dismissed';
 
 export function usePWAInstall() {
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [isInstalled, setIsInstalled] = useState(false);
-  const [isIOS, setIsIOS] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(() => {
+    if (typeof window !== 'undefined' && window.__deferredPrompt) {
+      return window.__deferredPrompt;
+    }
+    return null;
+  });
+
+  const [isInstalled, setIsInstalled] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return (
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.matchMedia('(display-mode: minimal-ui)').matches ||
+      (window.navigator as unknown as { standalone?: boolean }).standalone === true ||
+      document.referrer.includes('android-app://')
+    );
+  });
+
+  const [isIOS, setIsIOS] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const ua = window.navigator.userAgent.toLowerCase();
+    return /iphone|ipad|ipod/.test(ua) && !(window as any).MSStream;
+  });
+
+  const [isAndroid, setIsAndroid] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const ua = window.navigator.userAgent.toLowerCase();
+    return /android/.test(ua);
+  });
+
   const [isDismissed, setIsDismissed] = useState<boolean>(() => {
     try {
       return sessionStorage.getItem(DISMISS_KEY) === 'true';
@@ -20,7 +46,11 @@ export function usePWAInstall() {
   });
 
   useEffect(() => {
-    // 1. Detect standalone mode (already installed or running as standalone PWA)
+    // Check if prompt was already captured at window level
+    if (window.__deferredPrompt && !deferredPrompt) {
+      setDeferredPrompt(window.__deferredPrompt);
+    }
+
     const checkStandalone = () => {
       const isStandalone =
         window.matchMedia('(display-mode: standalone)').matches ||
@@ -32,7 +62,6 @@ export function usePWAInstall() {
 
     checkStandalone();
 
-    // Listen for display mode changes (e.g. if launched or installed)
     const mediaQuery = window.matchMedia('(display-mode: standalone)');
     const handleMediaChange = (e: MediaQueryListEvent) => {
       if (e.matches) {
@@ -43,61 +72,65 @@ export function usePWAInstall() {
       mediaQuery.addEventListener('change', handleMediaChange);
     }
 
-    // 2. Detect iOS devices (iPhone, iPad, iPod)
-    const userAgent = window.navigator.userAgent.toLowerCase();
-    const isIOSDevice = /iphone|ipad|ipod/.test(userAgent) && !(window as any).MSStream;
-    setIsIOS(isIOSDevice);
-
-    // 3. Capture beforeinstallprompt event for Android Chrome & Chromium
     const handleBeforeInstallPrompt = (e: Event) => {
-      // Prevent browser default mini-infobar
       e.preventDefault();
-      // Stash event so it can be triggered by our Install Now button
-      setDeferredPrompt(e as BeforeInstallPromptEvent);
+      const promptEvent = e as BeforeInstallPromptEvent;
+      window.__deferredPrompt = promptEvent;
+      setDeferredPrompt(promptEvent);
     };
 
-    // 4. Listen for successful installation
+    const handlePromptAvailable = () => {
+      if (window.__deferredPrompt) {
+        setDeferredPrompt(window.__deferredPrompt);
+      }
+    };
+
     const handleAppInstalled = () => {
-      console.log('1 social was installed successfully');
-      setIsInstalled(true);
+      window.__deferredPrompt = null;
       setDeferredPrompt(null);
+      setIsInstalled(true);
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('pwa-prompt-available', handlePromptAvailable);
     window.addEventListener('appinstalled', handleAppInstalled);
+    window.addEventListener('pwa-installed', handleAppInstalled);
 
     return () => {
       if (mediaQuery.removeEventListener) {
         mediaQuery.removeEventListener('change', handleMediaChange);
       }
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('pwa-prompt-available', handlePromptAvailable);
       window.removeEventListener('appinstalled', handleAppInstalled);
+      window.removeEventListener('pwa-installed', handleAppInstalled);
     };
-  }, []);
+  }, [deferredPrompt]);
 
-  // Trigger native browser install prompt
   const install = useCallback(async (): Promise<'accepted' | 'dismissed' | false> => {
-    if (!deferredPrompt) return false;
-    try {
-      // Trigger the Android Chrome native install confirmation dialog
-      await deferredPrompt.prompt();
-      const choiceResult = await deferredPrompt.userChoice;
-      console.log(`User installation choice: ${choiceResult.outcome}`);
+    const promptEvent = deferredPrompt || (typeof window !== 'undefined' ? window.__deferredPrompt : null);
+    if (!promptEvent) {
+      return false;
+    }
 
-      if (choiceResult.outcome === 'accepted') {
+    try {
+      await promptEvent.prompt();
+      const choice = await promptEvent.userChoice;
+      if (choice && choice.outcome === 'accepted') {
         setIsInstalled(true);
+        if (typeof window !== 'undefined') {
+          window.__deferredPrompt = null;
+        }
         setDeferredPrompt(null);
         return 'accepted';
-      } else {
-        return 'dismissed';
       }
+      return 'dismissed';
     } catch (err) {
-      console.warn('Error invoking install prompt:', err);
+      console.warn('Install prompt execution notice:', err);
       return false;
     }
   }, [deferredPrompt]);
 
-  // Dismiss banner for current session
   const dismiss = useCallback(() => {
     setIsDismissed(true);
     try {
@@ -105,11 +138,13 @@ export function usePWAInstall() {
     } catch {}
   }, []);
 
+  const hasPrompt = !!deferredPrompt || (typeof window !== 'undefined' && !!window.__deferredPrompt);
+
   return {
-    isInstallable: !!deferredPrompt,
-    deferredPrompt,
+    isInstallable: hasPrompt,
     isInstalled,
     isIOS,
+    isAndroid,
     isDismissed,
     install,
     dismiss,

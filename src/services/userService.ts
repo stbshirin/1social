@@ -39,21 +39,24 @@ export function getSocialUsersCollection(): CollectionReference {
  * Creates a brand new separate socialApp user profile without touching any legacy user data
  */
 export async function createSocialUserProfile(uid: string, profileData: UserProfile): Promise<void> {
-  const timestamp = serverTimestamp();
   const payload = {
     ...profileData,
-    createdAt: timestamp,
-    updatedAt: timestamp,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   };
 
   // 1. Write to socialApp_users/{uid}
-  const directRef = getSocialUserDocRef(uid);
-  await setDoc(directRef, payload);
+  try {
+    const directRef = getSocialUserDocRef(uid);
+    await setDoc(directRef, payload, { merge: true });
+  } catch (e) {
+    console.warn('Direct user profile setDoc notice (will sync when online):', e);
+  }
 
   // 2. Also write to socialApp/app/users/{uid}
   try {
     const subRef = getSocialUserSubDocRef(uid);
-    await setDoc(subRef, payload);
+    await setDoc(subRef, payload, { merge: true });
   } catch (e) {
     console.warn('Subcollection sync notice:', e);
   }
@@ -83,20 +86,23 @@ export async function createSocialUserProfile(uid: string, profileData: UserProf
  * Updates an existing socialApp user profile across the separate socialApp paths
  */
 export async function updateSocialUserProfile(uid: string, data: Partial<UserProfile>): Promise<void> {
-  const timestamp = serverTimestamp();
   const payload = {
     ...data,
-    updatedAt: timestamp,
+    updatedAt: new Date().toISOString(),
   };
 
-  const directRef = getSocialUserDocRef(uid);
-  await updateDoc(directRef, payload);
+  try {
+    const directRef = getSocialUserDocRef(uid);
+    await updateDoc(directRef, payload);
+  } catch (e) {
+    console.warn('Direct profile updateDoc notice:', e);
+  }
 
   try {
     const subRef = getSocialUserSubDocRef(uid);
     await updateDoc(subRef, payload);
   } catch (e) {
-    console.warn('Subcollection update notice:', e);
+    // Non-blocking
   }
 
   try {
@@ -120,21 +126,29 @@ export async function updateSocialUserProfile(uid: string, data: Partial<UserPro
 }
 
 /**
- * Fetches the separate socialApp profile for a given UID
+ * Fetches the separate socialApp profile for a given UID with safe offline fallback
  */
 export async function fetchSocialUserProfile(uid: string): Promise<UserProfile | null> {
-  // Check direct doc first
-  const directRef = getSocialUserDocRef(uid);
-  const snap = await getDoc(directRef);
-  if (snap.exists()) {
-    return { id: snap.id, ...snap.data() } as UserProfile;
+  // Check direct doc first with safe error handling
+  try {
+    const directRef = getSocialUserDocRef(uid);
+    const snap = await getDoc(directRef);
+    if (snap.exists()) {
+      return { id: snap.id, ...snap.data() } as UserProfile;
+    }
+  } catch (err: any) {
+    console.warn('fetchSocialUserProfile directRef check notice:', err?.message || err);
   }
 
   // Fallback check subcollection doc
-  const subRef = getSocialUserSubDocRef(uid);
-  const subSnap = await getDoc(subRef);
-  if (subSnap.exists()) {
-    return { id: subSnap.id, ...subSnap.data() } as UserProfile;
+  try {
+    const subRef = getSocialUserSubDocRef(uid);
+    const subSnap = await getDoc(subRef);
+    if (subSnap.exists()) {
+      return { id: subSnap.id, ...subSnap.data() } as UserProfile;
+    }
+  } catch (err: any) {
+    console.warn('fetchSocialUserProfile subRef check notice:', err?.message || err);
   }
 
   return null;

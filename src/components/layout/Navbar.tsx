@@ -1,13 +1,10 @@
 import React from 'react';
-import { Sparkles, Bell, MessageSquare, Sun, Moon, Shield, Search } from 'lucide-react';
+import { Sparkles, Bell, MessageSquare, Shield, Search } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { PWAInstallButton } from '../pwa/PWAInstallButton';
 
 interface NavbarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
-  isDark: boolean;
-  setIsDark: (dark: boolean) => void;
   unreadMessagesCount: number;
   unreadNotificationsCount: number;
   searchQuery: string;
@@ -17,8 +14,6 @@ interface NavbarProps {
 export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
   setActiveTab,
-  isDark,
-  setIsDark,
   unreadMessagesCount,
   unreadNotificationsCount,
   searchQuery,
@@ -63,18 +58,6 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Right Header Action Controls */}
         <div className="flex items-center gap-2 sm:gap-3">
-          {/* In-app PWA Install Button */}
-          <PWAInstallButton variant="navbar" />
-
-          {/* Dark / Light Toggle */}
-          <button
-            onClick={() => setIsDark(!isDark)}
-            className="p-2 rounded-full text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-            title="Toggle theme"
-          >
-            {isDark ? <Sun size={20} /> : <Moon size={20} />}
-          </button>
-
           {/* Admin shortcut badge if admin */}
           {isAdmin && (
             <button

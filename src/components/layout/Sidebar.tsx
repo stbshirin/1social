@@ -10,7 +10,6 @@ import {
   PlusCircle,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { PWAInstallButton } from '../pwa/PWAInstallButton';
 
 interface SidebarProps {
   activeTab: string;
@@ -82,9 +81,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <PlusCircle size={20} />
           <span>New Post</span>
         </button>
-
-        {/* PWA Install Button */}
-        <PWAInstallButton variant="sidebar" />
       </div>
 
       {/* User profile card & logout */}

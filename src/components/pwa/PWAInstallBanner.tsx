@@ -1,13 +1,13 @@
 import React, { useState } from 'react';
-import { Download, X, Share, CheckCircle2, Sparkles, Smartphone } from 'lucide-react';
+import { Download, X, Share, CheckCircle2, MoreVertical, Smartphone } from 'lucide-react';
 import { usePWAInstall } from '../../hooks/usePWAInstall';
 
 export const PWAInstallBanner: React.FC = () => {
-  const { isInstallable, isInstalled, isIOS, isDismissed, install, dismiss } = usePWAInstall();
-  const [showIOSModal, setShowIOSModal] = useState(false);
-  const [installStatus, setInstallStatus] = useState<'idle' | 'installing' | 'installed' | 'cancelled'>('idle');
+  const { isInstallable, isInstalled, isIOS, isAndroid, isDismissed, install, dismiss } = usePWAInstall();
+  const [showGuideModal, setShowGuideModal] = useState(false);
+  const [installStatus, setInstallStatus] = useState<'idle' | 'installing' | 'installed'>('idle');
 
-  // Do not show banner if already installed or dismissed by user in this session
+  // If already installed as PWA or dismissed in this session, do not render
   if (isInstalled || isDismissed) {
     return null;
   }
@@ -20,27 +20,24 @@ export const PWAInstallBanner: React.FC = () => {
         setInstallStatus('installed');
         setTimeout(() => {
           dismiss();
-        }, 2000);
+        }, 1500);
       } else {
-        setInstallStatus('cancelled');
-        setTimeout(() => setInstallStatus('idle'), 3000);
+        setInstallStatus('idle');
       }
-    } else if (isIOS) {
-      setShowIOSModal(true);
     } else {
-      // Browser fallback (e.g. desktop Chrome without prompt yet or Firefox)
-      setShowIOSModal(true);
+      // Browser didn't expose beforeinstallprompt yet or requires browser menu
+      setShowGuideModal(true);
     }
   };
 
   return (
     <>
-      {/* High-Converting Professional PWA Install Banner */}
-      <div className="w-full max-w-2xl mx-auto mb-6 px-1 animate-in fade-in slide-in-from-top-3 duration-300">
-        <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-indigo-500/30 p-4 sm:p-5 shadow-2xl text-white backdrop-blur-xl">
-          {/* Subtle Ambient Glow */}
-          <div className="absolute -top-12 -right-12 w-40 h-40 bg-indigo-500/20 rounded-full blur-2xl pointer-events-none" />
-          <div className="absolute -bottom-10 -left-10 w-32 h-32 bg-violet-500/20 rounded-full blur-2xl pointer-events-none" />
+      {/* High-Converting 1 social PWA Install Banner */}
+      <div className="w-full max-w-2xl mx-auto mb-5 px-1 animate-in fade-in slide-in-from-top-2 duration-300">
+        <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-indigo-500/35 p-4 sm:p-5 shadow-2xl text-white backdrop-blur-xl">
+          {/* Subtle Ambient Light Gradients */}
+          <div className="absolute -top-12 -right-12 w-44 h-44 bg-indigo-500/20 rounded-full blur-3xl pointer-events-none" />
+          <div className="absolute -bottom-10 -left-10 w-36 h-36 bg-violet-500/20 rounded-full blur-3xl pointer-events-none" />
 
           {/* Dismiss (X) Button */}
           <button
@@ -49,7 +46,7 @@ export const PWAInstallBanner: React.FC = () => {
             title="Dismiss banner"
             aria-label="Close install banner"
           >
-            <X size={16} />
+            <X size={17} />
           </button>
 
           <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
@@ -79,12 +76,12 @@ export const PWAInstallBanner: React.FC = () => {
               </div>
             </div>
 
-            {/* Right: Action Button */}
+            {/* Right: Install Now Action Button */}
             <div className="w-full sm:w-auto flex items-center justify-end shrink-0 pt-1 sm:pt-0">
               <button
                 onClick={handleInstallClick}
                 disabled={installStatus === 'installing' || installStatus === 'installed'}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-xs sm:text-sm shadow-xl shadow-indigo-600/30 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer disabled:opacity-75"
+                className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-xs sm:text-sm shadow-xl shadow-indigo-600/35 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer disabled:opacity-75"
               >
                 {installStatus === 'installed' ? (
                   <>
@@ -98,7 +95,7 @@ export const PWAInstallBanner: React.FC = () => {
                   </>
                 ) : (
                   <>
-                    <Download size={16} className="animate-bounce" />
+                    <Download size={16} />
                     <span>Install Now</span>
                   </>
                 )}
@@ -108,8 +105,8 @@ export const PWAInstallBanner: React.FC = () => {
         </div>
       </div>
 
-      {/* iOS Safari / Manual Installation Guide Modal */}
-      {showIOSModal && (
+      {/* Manual Installation Guide Modal when native prompt is not directly available */}
+      {showGuideModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-150">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-sm w-full p-6 shadow-2xl text-white relative">
             <div className="flex items-center justify-between mb-4">
@@ -120,49 +117,88 @@ export const PWAInstallBanner: React.FC = () => {
                 <h3 className="font-bold text-sm">Install 1 social</h3>
               </div>
               <button
-                onClick={() => setShowIOSModal(false)}
+                onClick={() => setShowGuideModal(false)}
                 className="p-1 rounded-lg text-slate-400 hover:text-white cursor-pointer"
               >
                 <X size={18} />
               </button>
             </div>
 
-            <p className="text-xs text-slate-300 mb-4 leading-relaxed">
-              To install 1 social on your iPhone, iPad, or mobile browser:
-            </p>
+            {/* iOS Safari Instructions */}
+            {isIOS ? (
+              <>
+                <p className="text-xs text-slate-300 mb-4 leading-relaxed">
+                  To install 1 social on your iPhone or iPad:
+                </p>
 
-            <div className="space-y-3 bg-slate-800/60 p-4 rounded-2xl text-xs text-slate-200 mb-5 border border-slate-700/50">
-              <div className="flex items-start gap-2.5">
-                <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
-                  1
-                </span>
-                <span>
-                  Tap the <strong className="inline-flex items-center gap-1 text-indigo-400"><Share size={12} /> Share</strong> icon in your browser toolbar.
-                </span>
-              </div>
-              <div className="flex items-start gap-2.5">
-                <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
-                  2
-                </span>
-                <span>
-                  Scroll down the menu and tap <strong>"Add to Home Screen"</strong>.
-                </span>
-              </div>
-              <div className="flex items-start gap-2.5">
-                <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
-                  3
-                </span>
-                <span>
-                  Tap <strong>Add</strong> in the top-right corner to launch 1 social in standalone app mode.
-                </span>
-              </div>
-            </div>
+                <div className="space-y-3 bg-slate-800/60 p-4 rounded-2xl text-xs text-slate-200 mb-5 border border-slate-700/50">
+                  <div className="flex items-start gap-2.5">
+                    <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
+                      1
+                    </span>
+                    <span>
+                      Tap the <strong className="inline-flex items-center gap-1 text-indigo-400"><Share size={12} /> Share</strong> icon in your Safari toolbar.
+                    </span>
+                  </div>
+                  <div className="flex items-start gap-2.5">
+                    <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
+                      2
+                    </span>
+                    <span>
+                      Scroll down and tap <strong>"Add to Home Screen"</strong>.
+                    </span>
+                  </div>
+                  <div className="flex items-start gap-2.5">
+                    <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
+                      3
+                    </span>
+                    <span>
+                      Tap <strong>Add</strong> in the top-right corner to launch 1 social as a native app!
+                    </span>
+                  </div>
+                </div>
+              </>
+            ) : (
+              /* Android Chrome / Chromium Instructions (NEVER shows iPhone instructions on Android!) */
+              <>
+                <p className="text-xs text-slate-300 mb-4 leading-relaxed">
+                  To install 1 social in Chrome on Android:
+                </p>
+
+                <div className="space-y-3 bg-slate-800/60 p-4 rounded-2xl text-xs text-slate-200 mb-5 border border-slate-700/50">
+                  <div className="flex items-start gap-2.5">
+                    <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
+                      1
+                    </span>
+                    <span>
+                      Tap the <strong className="inline-flex items-center gap-1 text-indigo-400"><MoreVertical size={12} /> Chrome menu (three dots)</strong> at the top right.
+                    </span>
+                  </div>
+                  <div className="flex items-start gap-2.5">
+                    <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
+                      2
+                    </span>
+                    <span>
+                      Tap <strong>"Install app"</strong> or <strong>"Add to Home screen"</strong>.
+                    </span>
+                  </div>
+                  <div className="flex items-start gap-2.5">
+                    <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
+                      3
+                    </span>
+                    <span>
+                      Tap <strong>Install</strong> to add 1 social to your Android home screen and app drawer!
+                    </span>
+                  </div>
+                </div>
+              </>
+            )}
 
             <button
-              onClick={() => setShowIOSModal(false)}
+              onClick={() => setShowGuideModal(false)}
               className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold cursor-pointer shadow-md"
             >
-              Close
+              Got it
             </button>
           </div>
         </div>

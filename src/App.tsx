@@ -24,12 +24,7 @@ import { Sparkles, Ban, LogOut } from 'lucide-react';
 
 const MainApp: React.FC = () => {
   const { currentUser, userProfile, loading, logOut } = useAuth();
-
   const [activeTab, setActiveTab] = useState('feed');
-  const [isDark, setIsDark] = useState(() => {
-    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-  });
-
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
 
@@ -45,14 +40,10 @@ const MainApp: React.FC = () => {
   const [targetProfileId, setTargetProfileId] = useState<string | null>(null);
   const [initialChatUser, setInitialChatUser] = useState<UserProfile | null>(null);
 
-  // Apply dark mode class to document
+  // Always enforce 1 social Dark Theme
   useEffect(() => {
-    if (isDark) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  }, [isDark]);
+    document.documentElement.classList.add('dark');
+  }, []);
 
   // Listen to unread notifications
   useEffect(() => {
@@ -126,8 +117,6 @@ const MainApp: React.FC = () => {
           if (tab === 'profile') setTargetProfileId(null);
           setActiveTab(tab);
         }}
-        isDark={isDark}
-        setIsDark={setIsDark}
         unreadMessagesCount={unreadMessagesCount}
         unreadNotificationsCount={unreadNotificationsCount}
         searchQuery={searchQuery}
