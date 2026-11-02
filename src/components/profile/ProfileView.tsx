@@ -81,12 +81,18 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       setEditWebsite(myProfile.website || '');
       setEditPhotoURL(myProfile.photoURL || '');
       setEditCoverURL(myProfile.coverURL || '');
-      const unsub = onSnapshot(getSocialUserDocRef(currentUid), (snap) => {
-        if (snap.exists()) {
-          const data = { id: snap.id, ...snap.data() } as UserProfile;
-          setProfile(data);
+      const unsub = onSnapshot(
+        getSocialUserDocRef(currentUid),
+        (snap) => {
+          if (snap.exists()) {
+            const data = { id: snap.id, ...snap.data() } as UserProfile;
+            setProfile(data);
+          }
+        },
+        (error) => {
+          console.warn('Profile listener notice:', error?.message || error);
         }
-      });
+      );
       return () => unsub();
     }
   }, [currentUid, isMe, myProfile]);
@@ -95,11 +101,17 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   useEffect(() => {
     if (!currentUid) return;
     const q = query(collection(db, 'posts'), where('authorId', '==', currentUid));
-    const unsub = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Post));
-      list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      setPosts(list);
-    });
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Post));
+        list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        setPosts(list);
+      },
+      (error) => {
+        console.warn('User posts listener notice:', error?.message || error);
+      }
+    );
     return () => unsub();
   }, [currentUid]);
 
@@ -109,18 +121,30 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
     // Followers of this user
     const qFollowers = query(collection(db, 'follows'), where('followingId', '==', currentUid));
-    const unsubFollowers = onSnapshot(qFollowers, (snap) => {
-      setFollowersCount(snap.size);
-      if (!isMe) {
-        setIsFollowing(snap.docs.some((d) => (d.data() as Follow).followerId === currentUser.uid));
+    const unsubFollowers = onSnapshot(
+      qFollowers,
+      (snap) => {
+        setFollowersCount(snap.size);
+        if (!isMe) {
+          setIsFollowing(snap.docs.some((d) => (d.data() as Follow).followerId === currentUser.uid));
+        }
+      },
+      (error) => {
+        console.warn('Followers listener notice:', error?.message || error);
       }
-    });
+    );
 
     // Following by this user
     const qFollowing = query(collection(db, 'follows'), where('followerId', '==', currentUid));
-    const unsubFollowing = onSnapshot(qFollowing, (snap) => {
-      setFollowingCount(snap.size);
-    });
+    const unsubFollowing = onSnapshot(
+      qFollowing,
+      (snap) => {
+        setFollowingCount(snap.size);
+      },
+      (error) => {
+        console.warn('Following listener notice:', error?.message || error);
+      }
+    );
 
     return () => {
       unsubFollowers();

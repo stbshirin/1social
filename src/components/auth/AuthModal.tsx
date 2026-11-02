@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { Mail, Lock, User, AtSign, ArrowRight, Sparkles, CheckCircle2, AlertCircle } from 'lucide-react';
+import { TokenServiceNotice } from '../common/TokenServiceNotice';
 
 export const AuthModal: React.FC = () => {
-  const { logInWithEmail, signUpWithEmail, logInWithGoogle, resetPassword } = useAuth();
+  const { logInWithEmail, signUpWithEmail, logInWithGoogle, resetPassword, tokenServiceDisabled } = useAuth();
   const [mode, setMode] = useState<'login' | 'signup' | 'forgot'>('login');
 
   const [email, setEmail] = useState('');
@@ -55,12 +56,17 @@ export const AuthModal: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen w-full flex items-center justify-center p-4 bg-slate-950 relative overflow-hidden font-sans">
+    <div className="min-h-screen w-full flex flex-col items-center justify-center p-4 bg-slate-950 relative overflow-hidden font-sans">
+      {tokenServiceDisabled && (
+        <div className="w-full fixed top-0 inset-x-0 z-50">
+          <TokenServiceNotice />
+        </div>
+      )}
       {/* Dynamic Background Glows */}
       <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-indigo-600/20 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-600/20 rounded-full blur-3xl pointer-events-none" />
 
-      <div className="w-full max-w-md bg-slate-900/90 border border-slate-800 rounded-3xl p-7 sm:p-9 shadow-2xl backdrop-blur-xl relative z-10">
+      <div className="w-full max-w-md bg-slate-900/90 border border-slate-800 rounded-3xl p-7 sm:p-9 shadow-2xl backdrop-blur-xl relative z-10 mt-10 sm:mt-0">
         {/* Brand Header */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-500 text-white font-black text-2xl shadow-lg shadow-indigo-500/30 mb-4">

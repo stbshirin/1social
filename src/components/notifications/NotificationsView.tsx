@@ -46,12 +46,19 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       where('recipientId', '==', currentUser.uid)
     );
 
-    const unsub = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as NotificationItem));
-      list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-      setNotifications(list);
-      setLoading(false);
-    });
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as NotificationItem));
+        list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        setNotifications(list);
+        setLoading(false);
+      },
+      (error) => {
+        console.warn('Notifications listener notice:', error?.message || error);
+        setLoading(false);
+      }
+    );
 
     return () => unsub();
   }, [currentUser]);

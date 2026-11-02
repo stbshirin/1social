@@ -39,36 +39,60 @@ export const AdminDashboard: React.FC = () => {
   // Real-time listener for socialApp users
   useEffect(() => {
     if (!isAdmin) return;
-    const unsub = onSnapshot(getSocialUsersCollection(), (snap) => {
-      setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() } as UserProfile)));
-    });
+    const unsub = onSnapshot(
+      getSocialUsersCollection(),
+      (snap) => {
+        setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() } as UserProfile)));
+      },
+      (error) => {
+        console.warn('Admin users listener notice:', error?.message || error);
+      }
+    );
     return () => unsub();
   }, [isAdmin]);
 
   // Real-time listener for posts
   useEffect(() => {
     if (!isAdmin) return;
-    const unsub = onSnapshot(collection(db, 'posts'), (snap) => {
-      setPosts(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Post)));
-    });
+    const unsub = onSnapshot(
+      collection(db, 'posts'),
+      (snap) => {
+        setPosts(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Post)));
+      },
+      (error) => {
+        console.warn('Admin posts listener notice:', error?.message || error);
+      }
+    );
     return () => unsub();
   }, [isAdmin]);
 
   // Real-time listener for reports
   useEffect(() => {
     if (!isAdmin) return;
-    const unsub = onSnapshot(collection(db, 'reports'), (snap) => {
-      setReports(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ReportItem)));
-    });
+    const unsub = onSnapshot(
+      collection(db, 'reports'),
+      (snap) => {
+        setReports(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ReportItem)));
+      },
+      (error) => {
+        console.warn('Admin reports listener notice:', error?.message || error);
+      }
+    );
     return () => unsub();
   }, [isAdmin]);
 
   // Real-time listener for calls
   useEffect(() => {
     if (!isAdmin) return;
-    const unsub = onSnapshot(collection(db, 'calls'), (snap) => {
-      setCalls(snap.docs.map((d) => ({ id: d.id, ...d.data() } as CallSession)));
-    });
+    const unsub = onSnapshot(
+      collection(db, 'calls'),
+      (snap) => {
+        setCalls(snap.docs.map((d) => ({ id: d.id, ...d.data() } as CallSession)));
+      },
+      (error) => {
+        console.warn('Admin calls listener notice:', error?.message || error);
+      }
+    );
     return () => unsub();
   }, [isAdmin]);
 

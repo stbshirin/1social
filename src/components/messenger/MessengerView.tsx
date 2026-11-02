@@ -92,11 +92,17 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
       where('participants', 'array-contains', currentUser.uid)
     );
 
-    const unsub = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Conversation));
-      list.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
-      setConversations(list);
-    });
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Conversation));
+        list.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
+        setConversations(list);
+      },
+      (error) => {
+        console.warn('Conversations listener notice:', error?.message || error);
+      }
+    );
 
     return () => unsub();
   }, [currentUser]);
@@ -174,25 +180,35 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
       orderBy('createdAt', 'asc')
     );
 
-    const unsub = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Message));
-      setMessages(list);
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Message));
+        setMessages(list);
 
-      // Play chime if a new message arrives from the other participant
-      if (snapshot.docChanges().some((ch) => ch.type === 'added' && ch.doc.data().senderId !== currentUser.uid)) {
-        soundEffects.playMessageNotification();
-      }
-
-      // Mark seenBy
-      snapshot.docs.forEach(async (docSnap) => {
-        const msg = docSnap.data() as Message;
-        if (!msg.seenBy?.includes(currentUser.uid)) {
-          await updateDoc(docSnap.ref, {
-            seenBy: [...(msg.seenBy || []), currentUser.uid],
-          });
+        // Play chime if a new message arrives from the other participant
+        if (snapshot.docChanges().some((ch) => ch.type === 'added' && ch.doc.data().senderId !== currentUser.uid)) {
+          soundEffects.playMessageNotification();
         }
-      });
-    });
+
+        // Mark seenBy
+        snapshot.docs.forEach(async (docSnap) => {
+          const msg = docSnap.data() as Message;
+          if (!msg.seenBy?.includes(currentUser.uid)) {
+            try {
+              await updateDoc(docSnap.ref, {
+                seenBy: [...(msg.seenBy || []), currentUser.uid],
+              });
+            } catch (e) {
+              // Non-blocking
+            }
+          }
+        });
+      },
+      (error) => {
+        console.warn('Messages listener notice:', error?.message || error);
+      }
+    );
 
     return () => unsub();
   }, [selectedConversation?.id, currentUser]);

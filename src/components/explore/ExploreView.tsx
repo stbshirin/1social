@@ -33,12 +33,18 @@ export const ExploreView: React.FC<ExploreViewProps> = ({
   useEffect(() => {
     if (!currentUser) return;
     const q = query(getSocialUsersCollection());
-    const unsub = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs
-        .map((d) => ({ id: d.id, ...d.data() } as UserProfile))
-        .filter((u) => u.uid !== currentUser.uid);
-      setUsers(list);
-    });
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const list = snapshot.docs
+          .map((d) => ({ id: d.id, ...d.data() } as UserProfile))
+          .filter((u) => u.uid !== currentUser.uid);
+        setUsers(list);
+      },
+      (error) => {
+        console.warn('Explore users listener notice:', error?.message || error);
+      }
+    );
 
     return () => unsub();
   }, [currentUser]);
@@ -47,16 +53,22 @@ export const ExploreView: React.FC<ExploreViewProps> = ({
   useEffect(() => {
     if (!currentUser) return;
     const q = query(collection(db, 'follows'));
-    const unsub = onSnapshot(q, (snapshot) => {
-      const map: Record<string, boolean> = {};
-      snapshot.docs.forEach((d) => {
-        const data = d.data() as Follow;
-        if (data.followerId === currentUser.uid) {
-          map[data.followingId] = true;
-        }
-      });
-      setFollowingMap(map);
-    });
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const map: Record<string, boolean> = {};
+        snapshot.docs.forEach((d) => {
+          const data = d.data() as Follow;
+          if (data.followerId === currentUser.uid) {
+            map[data.followingId] = true;
+          }
+        });
+        setFollowingMap(map);
+      },
+      (error) => {
+        console.warn('Explore follows listener notice:', error?.message || error);
+      }
+    );
 
     return () => unsub();
   }, [currentUser]);

@@ -99,22 +99,28 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       where('status', 'in', ['offering', 'ringing'])
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (!snapshot.empty) {
-        const callDoc = snapshot.docs[0];
-        const data = { id: callDoc.id, ...callDoc.data() } as CallSession;
-        // If we're not currently on a call
-        if (!activeCall && !incomingCall) {
-          setIncomingCall(data);
-          soundEffects.startIncomingRingtone();
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const callDoc = snapshot.docs[0];
+          const data = { id: callDoc.id, ...callDoc.data() } as CallSession;
+          // If we're not currently on a call
+          if (!activeCall && !incomingCall) {
+            setIncomingCall(data);
+            soundEffects.startIncomingRingtone();
+          }
+        } else {
+          if (incomingCall) {
+            soundEffects.stopRingtone();
+            setIncomingCall(null);
+          }
         }
-      } else {
-        if (incomingCall) {
-          soundEffects.stopRingtone();
-          setIncomingCall(null);
-        }
+      },
+      (error) => {
+        console.warn('Incoming calls listener notice:', error?.message || error);
       }
-    });
+    );
 
     return () => unsubscribe();
   }, [currentUser, activeCall, incomingCall]);
@@ -192,44 +198,56 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setActiveCall(newCall);
 
       // Listen for answer and call state changes
-      unsubCallRef.current = onSnapshot(callDocRef, async (snapshot) => {
-        const data = snapshot.data();
-        if (!data) return;
+      unsubCallRef.current = onSnapshot(
+        callDocRef,
+        async (snapshot) => {
+          const data = snapshot.data();
+          if (!data) return;
 
-        if (data.status === 'accepted' && data.answer && !pc.currentRemoteDescription) {
-          soundEffects.playCallConnected();
-          const answerDescription = new RTCSessionDescription(data.answer);
-          await pc.setRemoteDescription(answerDescription);
+          if (data.status === 'accepted' && data.answer && !pc.currentRemoteDescription) {
+            soundEffects.playCallConnected();
+            const answerDescription = new RTCSessionDescription(data.answer);
+            await pc.setRemoteDescription(answerDescription);
 
-          // Start duration timer
-          if (!timerRef.current) {
-            timerRef.current = setInterval(() => {
-              setCallDuration((prev) => prev + 1);
-            }, 1000);
+            // Start duration timer
+            if (!timerRef.current) {
+              timerRef.current = setInterval(() => {
+                setCallDuration((prev) => prev + 1);
+              }, 1000);
+            }
+            setActiveCall((prev) => (prev ? { ...prev, status: 'accepted' } : null));
+          } else if (data.status === 'rejected' || data.status === 'ended') {
+            soundEffects.playCallEnded();
+            cleanupMedia();
           }
-          setActiveCall((prev) => (prev ? { ...prev, status: 'accepted' } : null));
-        } else if (data.status === 'rejected' || data.status === 'ended') {
-          soundEffects.playCallEnded();
-          cleanupMedia();
+        },
+        (error) => {
+          console.warn('CallDoc listener notice:', error?.message || error);
         }
-      });
+      );
 
       // Listen for remote ICE candidates from callee
       const candidatesCol = collection(db, 'calls', callId, 'candidates');
-      unsubCandidatesRef.current = onSnapshot(candidatesCol, (snap) => {
-        snap.docChanges().forEach(async (change) => {
-          if (change.type === 'added') {
-            const cData = change.doc.data();
-            if (cData.senderId !== currentUser.uid && cData.candidate) {
-              try {
-                await pc.addIceCandidate(new RTCIceCandidate(cData.candidate));
-              } catch (err) {
-                console.warn('Error adding received ICE candidate:', err);
+      unsubCandidatesRef.current = onSnapshot(
+        candidatesCol,
+        (snap) => {
+          snap.docChanges().forEach(async (change) => {
+            if (change.type === 'added') {
+              const cData = change.doc.data();
+              if (cData.senderId !== currentUser.uid && cData.candidate) {
+                try {
+                  await pc.addIceCandidate(new RTCIceCandidate(cData.candidate));
+                } catch (err) {
+                  console.warn('Error adding received ICE candidate:', err);
+                }
               }
             }
-          }
-        });
-      });
+          });
+        },
+        (error) => {
+          console.warn('Candidates listener notice:', error?.message || error);
+        }
+      );
     } catch (err) {
       console.error('Failed to initiate call:', err);
       soundEffects.playCallEnded();
@@ -302,30 +320,42 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }, 1000);
 
       // Listen for call termination
-      unsubCallRef.current = onSnapshot(callDocRef, (snap) => {
-        const data = snap.data();
-        if (data && (data.status === 'ended' || data.status === 'rejected')) {
-          soundEffects.playCallEnded();
-          cleanupMedia();
+      unsubCallRef.current = onSnapshot(
+        callDocRef,
+        (snap) => {
+          const data = snap.data();
+          if (data && (data.status === 'ended' || data.status === 'rejected')) {
+            soundEffects.playCallEnded();
+            cleanupMedia();
+          }
+        },
+        (error) => {
+          console.warn('Call termination listener notice:', error?.message || error);
         }
-      });
+      );
 
       // Listen for caller's ICE candidates
       const candidatesCol = collection(db, 'calls', callToAccept.id, 'candidates');
-      unsubCandidatesRef.current = onSnapshot(candidatesCol, (snap) => {
-        snap.docChanges().forEach(async (change) => {
-          if (change.type === 'added') {
-            const cData = change.doc.data();
-            if (cData.senderId !== currentUser.uid && cData.candidate) {
-              try {
-                await pc.addIceCandidate(new RTCIceCandidate(cData.candidate));
-              } catch (e) {
-                console.warn('Error adding caller ICE candidate:', e);
+      unsubCandidatesRef.current = onSnapshot(
+        candidatesCol,
+        (snap) => {
+          snap.docChanges().forEach(async (change) => {
+            if (change.type === 'added') {
+              const cData = change.doc.data();
+              if (cData.senderId !== currentUser.uid && cData.candidate) {
+                try {
+                  await pc.addIceCandidate(new RTCIceCandidate(cData.candidate));
+                } catch (e) {
+                  console.warn('Error adding caller ICE candidate:', e);
+                }
               }
             }
-          }
-        });
-      });
+          });
+        },
+        (error) => {
+          console.warn('Caller ICE candidates listener notice:', error?.message || error);
+        }
+      );
     } catch (err) {
       console.error('Failed to accept call:', err);
       soundEffects.playCallEnded();

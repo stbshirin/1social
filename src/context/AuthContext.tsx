@@ -30,6 +30,7 @@ interface AuthContextType {
   userProfile: UserProfile | null;
   isAdmin: boolean;
   loading: boolean;
+  tokenServiceDisabled: boolean;
   signUpWithEmail: (email: string, pass: string, name: string, username: string) => Promise<void>;
   logInWithEmail: (email: string, pass: string) => Promise<void>;
   logInWithGoogle: () => Promise<void>;
@@ -47,6 +48,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
+  const [tokenServiceDisabled, setTokenServiceDisabled] = useState<boolean>(false);
 
   /**
    * Sync or create user profile specifically at the separate socialApp paths
@@ -121,6 +123,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
       if (user) {
+        // Probe token service
+        try {
+          await user.getIdToken();
+          setTokenServiceDisabled(false);
+        } catch (tokenErr: any) {
+          const msg = tokenErr?.message || String(tokenErr);
+          if (msg.includes('token-service-api-has-not-been-used') || msg.includes('securetoken.googleapis.com')) {
+            setTokenServiceDisabled(true);
+          }
+        }
+
         await syncSocialUserProfile(user);
 
         // Listen for real-time updates on the separate socialApp profile
@@ -211,6 +224,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         userProfile,
         isAdmin,
         loading,
+        tokenServiceDisabled,
         signUpWithEmail,
         logInWithEmail,
         logInWithGoogle,

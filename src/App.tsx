@@ -17,13 +17,14 @@ import { ReportModal } from './components/modals/ReportModal';
 import { CreatePostModal } from './components/modals/CreatePostModal';
 import { OfflineBanner } from './components/pwa/OfflineBanner';
 import { PWAUpdatePrompt } from './components/pwa/PWAUpdatePrompt';
+import { TokenServiceNotice } from './components/common/TokenServiceNotice';
 import { UserProfile } from './types';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from './firebase/config';
 import { Sparkles, Ban, LogOut } from 'lucide-react';
 
 const MainApp: React.FC = () => {
-  const { currentUser, userProfile, loading, logOut } = useAuth();
+  const { currentUser, userProfile, loading, logOut, tokenServiceDisabled } = useAuth();
   const [activeTab, setActiveTab] = useState('feed');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
@@ -53,9 +54,15 @@ const MainApp: React.FC = () => {
       where('recipientId', '==', currentUser.uid),
       where('read', '==', false)
     );
-    const unsub = onSnapshot(q, (snapshot) => {
-      setUnreadNotificationsCount(snapshot.size);
-    });
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        setUnreadNotificationsCount(snapshot.size);
+      },
+      (error) => {
+        console.warn('Notifications listener notice:', error?.message || error);
+      }
+    );
     return () => unsub();
   }, [currentUser]);
 
@@ -110,6 +117,7 @@ const MainApp: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans transition-colors pb-16 lg:pb-0">
+      {tokenServiceDisabled && <TokenServiceNotice />}
       {/* Top Navbar */}
       <Navbar
         activeTab={activeTab}
