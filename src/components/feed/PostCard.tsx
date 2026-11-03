@@ -28,6 +28,7 @@ import { db } from '../../firebase/config';
 import { useAuth } from '../../context/AuthContext';
 import { Post, Comment, Like } from '../../types';
 import { handleFirestoreError, OperationType } from '../../firebase/errorHandler';
+import { AdminBadge } from '../common/AdminBadge';
 
 interface PostCardProps {
   post: Post;
@@ -261,9 +262,12 @@ export const PostCard: React.FC<PostCardProps> = ({
             className="w-10 h-10 rounded-full object-cover border border-slate-200 dark:border-slate-700 group-hover:ring-2 group-hover:ring-indigo-500 transition-all"
           />
           <div>
-            <h4 className="text-sm font-bold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-              {post.authorName}
-            </h4>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <h4 className="text-sm font-bold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                {post.authorName}
+              </h4>
+              <AdminBadge user={{ uid: post.authorId }} size="xs" />
+            </div>
             <div className="flex items-center gap-1.5 text-xs text-slate-400">
               <span>@{post.authorUsername}</span>
               <span>•</span>
@@ -463,11 +467,12 @@ export const PostCard: React.FC<PostCardProps> = ({
                     <div className="flex items-center justify-between mb-1">
                       <div
                         onClick={() => onViewAuthorProfile?.(c.authorId)}
-                        className="flex items-center gap-1.5 cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400"
+                        className="flex items-center gap-1.5 flex-wrap cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400"
                       >
                         <span className="text-xs font-bold text-slate-900 dark:text-slate-100">
                           {c.authorName}
                         </span>
+                        <AdminBadge user={{ uid: c.authorId }} size="xs" />
                         <span className="text-[10px] text-slate-400">@{c.authorUsername}</span>
                       </div>
                       <span className="text-[10px] text-slate-400">{formatTime(c.createdAt)}</span>

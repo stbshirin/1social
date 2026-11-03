@@ -37,6 +37,9 @@ import { soundEffects } from '../../services/soundEffects';
 import { Conversation, Message, UserProfile } from '../../types';
 import { handleFirestoreError, OperationType } from '../../firebase/errorHandler';
 import { getSocialUsersCollection } from '../../services/userService';
+import { uploadChatAttachment } from '../../services/storageService';
+import { usePresence } from '../../services/presenceService';
+import { AdminBadge } from '../common/AdminBadge';
 
 interface MessengerViewProps {
   initialChatUser?: UserProfile | null;
@@ -63,6 +66,8 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
 
   // Media attachment state
   const [attachmentData, setAttachmentData] = useState<{ url: string; type: 'image' | 'video' | 'file' | 'audio' } | null>(null);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [attachmentProgress, setAttachmentProgress] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // New Chat Modal state
@@ -271,17 +276,31 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
         }
       };
 
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const reader = new FileReader();
-        reader.onloadend = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        if (!currentUser) return;
+
+        setUploadingAttachment(true);
+        setAttachmentProgress(1);
+        try {
+          const res = await uploadChatAttachment(
+            currentUser.uid,
+            audioBlob,
+            `voice_${Date.now()}.webm`,
+            (p) => setAttachmentProgress(p)
+          );
           setAttachmentData({
-            url: reader.result as string,
+            url: res.url,
             type: 'audio',
           });
-        };
-        reader.readAsDataURL(audioBlob);
-        stream.getTracks().forEach((t) => t.stop());
+        } catch (err: any) {
+          console.error('Voice note upload error:', err);
+          alert(err.message || 'Voice note upload failed.');
+        } finally {
+          setUploadingAttachment(false);
+          setAttachmentProgress(null);
+        }
       };
 
       recorder.start();
@@ -299,23 +318,31 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
   };
 
   // File / Media attachment
-  const handleAttachmentUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAttachmentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !currentUser) return;
 
-    let type: 'image' | 'video' | 'file' | 'audio' = 'file';
-    if (file.type.startsWith('image/')) type = 'image';
-    else if (file.type.startsWith('video/')) type = 'video';
-    else if (file.type.startsWith('audio/')) type = 'audio';
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
+    setUploadingAttachment(true);
+    setAttachmentProgress(1);
+    try {
+      const res = await uploadChatAttachment(
+        currentUser.uid,
+        file,
+        file.name,
+        (p) => setAttachmentProgress(p)
+      );
       setAttachmentData({
-        url: event.target?.result as string,
-        type,
+        url: res.url,
+        type: res.type,
       });
-    };
-    reader.readAsDataURL(file);
+    } catch (err: any) {
+      console.error('Attachment upload error:', err);
+      alert(err.message || 'Attachment upload failed.');
+    } finally {
+      setUploadingAttachment(false);
+      setAttachmentProgress(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   };
 
   // Delete message
@@ -485,50 +512,15 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
               </button>
             </div>
           ) : (
-            conversations.map((conv) => {
-              const other = getOtherParticipant(conv);
-              const isSelected = selectedConversation?.id === conv.id;
-              const title = conv.isGroup ? conv.groupName : other?.displayName || 'User';
-              const photo = conv.isGroup
-                ? conv.groupPhoto
-                : other?.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${other?.uid}`;
-
-              return (
-                <div
-                  key={conv.id}
-                  onClick={() => setSelectedConversation(conv)}
-                  className={`p-3.5 flex items-center gap-3 cursor-pointer transition-colors ${
-                    isSelected
-                      ? 'bg-indigo-50 dark:bg-slate-800/80 border-l-4 border-indigo-600'
-                      : 'hover:bg-slate-100 dark:hover:bg-slate-800/40'
-                  }`}
-                >
-                  <div className="relative shrink-0">
-                    <img
-                      src={photo}
-                      alt={title}
-                      className="w-11 h-11 rounded-full object-cover border border-slate-200 dark:border-slate-700"
-                    />
-                    {!conv.isGroup && (
-                      <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 border-2 border-white dark:border-slate-900" />
-                    )}
-                  </div>
-                  <div className="flex-1 truncate">
-                    <div className="flex items-center justify-between mb-0.5">
-                      <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
-                        {title}
-                      </h4>
-                      <span className="text-[10px] text-slate-400">
-                        {conv.lastMessageAt ? new Date(conv.lastMessageAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                      {conv.lastMessage || 'No messages yet'}
-                    </p>
-                  </div>
-                </div>
-              );
-            })
+            conversations.map((conv) => (
+              <MessengerConversationItem
+                key={conv.id}
+                conv={conv}
+                isSelected={selectedConversation?.id === conv.id}
+                onSelect={() => setSelectedConversation(conv)}
+                other={getOtherParticipant(conv)}
+              />
+            ))
           )}
         </div>
       </div>
@@ -541,55 +533,13 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
       >
         {selectedConversation ? (
           <>
-            {/* Chat Top Header */}
-            <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900">
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setSelectedConversation(null)}
-                  className="p-1.5 -ml-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 md:hidden cursor-pointer"
-                >
-                  <ArrowLeft size={18} />
-                </button>
-                <img
-                  src={
-                    selectedConversation.isGroup
-                      ? selectedConversation.groupPhoto
-                      : otherParticipant?.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${otherParticipant?.uid}`
-                  }
-                  alt="avatar"
-                  className="w-10 h-10 rounded-full object-cover border border-slate-200 dark:border-slate-700"
-                />
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900 dark:text-white leading-tight">
-                    {selectedConversation.isGroup ? selectedConversation.groupName : otherParticipant?.displayName}
-                  </h3>
-                  <div className="flex items-center gap-1.5 text-[11px] text-emerald-500 font-medium">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                    <span>Active Now</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Instant Call Buttons for 1-on-1 */}
-              {otherParticipant && (
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => initiateCall(otherParticipant, 'audio')}
-                    className="p-2.5 rounded-full text-slate-600 dark:text-slate-300 hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-950/30 dark:hover:text-emerald-400 transition-colors cursor-pointer"
-                    title="Audio Call"
-                  >
-                    <Phone size={19} />
-                  </button>
-                  <button
-                    onClick={() => initiateCall(otherParticipant, 'video')}
-                    className="p-2.5 rounded-full text-slate-600 dark:text-slate-300 hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-950/30 dark:hover:text-indigo-400 transition-colors cursor-pointer"
-                    title="Video Call"
-                  >
-                    <Video size={19} />
-                  </button>
-                </div>
-              )}
-            </div>
+            {/* Chat Top Header with real-time presence & AdminBadge */}
+            <MessengerChatHeader
+              selectedConversation={selectedConversation}
+              otherParticipant={otherParticipant}
+              onBack={() => setSelectedConversation(null)}
+              onInitiateCall={(target, type) => initiateCall(target, type)}
+            />
 
             {/* Chat Messages Stream */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3.5 bg-slate-50/30 dark:bg-slate-950/20">
@@ -673,6 +623,14 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
               )}
               <div ref={messagesEndRef} />
             </div>
+
+            {/* Uploading Attachment Indicator */}
+            {uploadingAttachment && (
+              <div className="p-2.5 bg-indigo-50 dark:bg-slate-800 border-t border-indigo-100 dark:border-slate-700 flex items-center justify-between text-xs text-indigo-600 dark:text-indigo-400">
+                <span className="font-medium animate-pulse">Uploading attachment to Firebase Storage...</span>
+                <span className="font-bold">{attachmentProgress || 0}%</span>
+              </div>
+            )}
 
             {/* Media Attachment Preview if selected */}
             {attachmentData && (
@@ -865,6 +823,159 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+interface MessengerChatHeaderProps {
+  selectedConversation: Conversation;
+  otherParticipant: UserProfile | null;
+  onBack: () => void;
+  onInitiateCall: (user: UserProfile, type: 'audio' | 'video') => void;
+}
+
+const MessengerChatHeader: React.FC<MessengerChatHeaderProps> = ({
+  selectedConversation,
+  otherParticipant,
+  onBack,
+  onInitiateCall,
+}) => {
+  const presence = usePresence(otherParticipant?.uid);
+
+  return (
+    <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900">
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onBack}
+          className="p-1.5 -ml-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 md:hidden cursor-pointer"
+        >
+          <ArrowLeft size={18} />
+        </button>
+        <div className="relative shrink-0">
+          <img
+            src={
+              selectedConversation.isGroup
+                ? selectedConversation.groupPhoto
+                : otherParticipant?.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${otherParticipant?.uid}`
+            }
+            alt="avatar"
+            className="w-10 h-10 rounded-full object-cover border border-slate-200 dark:border-slate-700"
+          />
+          {!selectedConversation.isGroup && (
+            <span
+              title={presence.isOnline ? 'Online now' : presence.lastSeenText}
+              className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white dark:border-slate-900 ${
+                presence.isOnline ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-600'
+              }`}
+            />
+          )}
+        </div>
+        <div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white leading-tight">
+              {selectedConversation.isGroup ? selectedConversation.groupName : otherParticipant?.displayName}
+            </h3>
+            {otherParticipant && <AdminBadge user={{ uid: otherParticipant.uid }} size="xs" />}
+          </div>
+          {!selectedConversation.isGroup && (
+            <div className="flex items-center gap-1.5 text-[11px] font-medium">
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  presence.isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'
+                }`}
+              />
+              <span className={presence.isOnline ? 'text-emerald-500 font-semibold' : 'text-slate-400'}>
+                {presence.isOnline ? 'Active Now' : presence.lastSeenText}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Instant Call Buttons for 1-on-1 */}
+      {otherParticipant && (
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onInitiateCall(otherParticipant, 'audio')}
+            className="p-2.5 rounded-full text-slate-600 dark:text-slate-300 hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-950/30 dark:hover:text-emerald-400 transition-colors cursor-pointer"
+            title="Audio Call"
+          >
+            <Phone size={19} />
+          </button>
+          <button
+            onClick={() => onInitiateCall(otherParticipant, 'video')}
+            className="p-2.5 rounded-full text-slate-600 dark:text-slate-300 hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-950/30 dark:hover:text-indigo-400 transition-colors cursor-pointer"
+            title="Video Call"
+          >
+            <Video size={19} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+interface MessengerConversationItemProps {
+  conv: Conversation;
+  isSelected: boolean;
+  onSelect: () => void;
+  other: UserProfile | null;
+}
+
+const MessengerConversationItem: React.FC<MessengerConversationItemProps> = ({
+  conv,
+  isSelected,
+  onSelect,
+  other,
+}) => {
+  const presence = usePresence(other?.uid);
+  const title = conv.isGroup ? conv.groupName : other?.displayName || 'User';
+  const photo = conv.isGroup
+    ? conv.groupPhoto
+    : other?.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${other?.uid}`;
+
+  return (
+    <div
+      onClick={onSelect}
+      className={`p-3.5 flex items-center gap-3 cursor-pointer transition-colors ${
+        isSelected
+          ? 'bg-indigo-50 dark:bg-slate-800/80 border-l-4 border-indigo-600'
+          : 'hover:bg-slate-100 dark:hover:bg-slate-800/40'
+      }`}
+    >
+      <div className="relative shrink-0">
+        <img
+          src={photo}
+          alt={title}
+          className="w-11 h-11 rounded-full object-cover border border-slate-200 dark:border-slate-700"
+        />
+        {!conv.isGroup && (
+          <span
+            title={presence.isOnline ? 'Online now' : presence.lastSeenText}
+            className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white dark:border-slate-900 ${
+              presence.isOnline ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-600'
+            }`}
+          />
+        )}
+      </div>
+      <div className="flex-1 truncate">
+        <div className="flex items-center justify-between mb-0.5">
+          <div className="flex items-center gap-1.5 truncate">
+            <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+              {title}
+            </h4>
+            {other && <AdminBadge user={{ uid: other.uid }} size="xs" />}
+          </div>
+          <span className="text-[10px] text-slate-400 shrink-0">
+            {conv.lastMessageAt
+              ? new Date(conv.lastMessageAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : ''}
+          </span>
+        </div>
+        <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+          {conv.lastMessage || 'No messages yet'}
+        </p>
+      </div>
     </div>
   );
 };

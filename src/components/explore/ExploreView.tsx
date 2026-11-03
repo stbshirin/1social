@@ -6,6 +6,8 @@ import { useAuth } from '../../context/AuthContext';
 import { useCall } from '../../context/CallContext';
 import { UserProfile, Follow } from '../../types';
 import { getSocialUsersCollection } from '../../services/userService';
+import { usePresence } from '../../services/presenceService';
+import { AdminBadge } from '../common/AdminBadge';
 
 interface ExploreViewProps {
   searchQuery: string;
@@ -132,83 +134,124 @@ export const ExploreView: React.FC<ExploreViewProps> = ({
             No users found matching "{localSearch}".
           </div>
         ) : (
-          filteredUsers.map((u) => {
-            const isFollowing = !!followingMap[u.uid];
-            return (
-              <div
-                key={u.uid}
-                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm flex flex-col justify-between transition-all hover:border-slate-300 dark:hover:border-slate-700"
-              >
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <div
-                    onClick={() => onViewProfile(u.uid)}
-                    className="flex items-center gap-3 cursor-pointer overflow-hidden"
-                  >
-                    <div className="relative">
-                      <img
-                        src={u.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.uid}`}
-                        alt={u.displayName}
-                        className="w-12 h-12 rounded-full object-cover border border-slate-200 dark:border-slate-700"
-                      />
-                      <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 border-2 border-white dark:border-slate-900" />
-                    </div>
-                    <div className="truncate">
-                      <h4 className="text-sm font-bold text-slate-900 dark:text-white truncate">
-                        {u.displayName}
-                      </h4>
-                      <p className="text-xs text-slate-400 truncate">@{u.username}</p>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => toggleFollow(u)}
-                    className={`text-xs px-3 py-1.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                      isFollowing
-                        ? 'bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 hover:bg-rose-50 hover:text-rose-600'
-                        : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm'
-                    }`}
-                  >
-                    {isFollowing ? 'Following' : 'Follow'}
-                  </button>
-                </div>
-
-                {u.bio && (
-                  <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-2 mb-3">
-                    {u.bio}
-                  </p>
-                )}
-
-                {/* Instant Action Bar */}
-                <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
-                  <button
-                    onClick={() => onStartChat(u)}
-                    className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors cursor-pointer"
-                  >
-                    <MessageSquare size={15} />
-                    <span>Chat</span>
-                  </button>
-
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => initiateCall(u, 'audio')}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-colors cursor-pointer"
-                      title="Audio Call"
-                    >
-                      <Phone size={16} />
-                    </button>
-                    <button
-                      onClick={() => initiateCall(u, 'video')}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-colors cursor-pointer"
-                      title="Video Call"
-                    >
-                      <Video size={16} />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            );
-          })
+          filteredUsers.map((u) => (
+            <ExploreUserCard
+              key={u.uid}
+              user={u}
+              isFollowing={!!followingMap[u.uid]}
+              onToggleFollow={() => toggleFollow(u)}
+              onViewProfile={onViewProfile}
+              onStartChat={onStartChat}
+              onInitiateCall={initiateCall}
+            />
+          ))
         )}
+      </div>
+    </div>
+  );
+};
+
+interface ExploreUserCardProps {
+  user: UserProfile;
+  isFollowing: boolean;
+  onToggleFollow: () => void;
+  onViewProfile: (userId: string) => void;
+  onStartChat: (user: UserProfile) => void;
+  onInitiateCall: (user: UserProfile, type: 'audio' | 'video') => void;
+}
+
+const ExploreUserCard: React.FC<ExploreUserCardProps> = ({
+  user,
+  isFollowing,
+  onToggleFollow,
+  onViewProfile,
+  onStartChat,
+  onInitiateCall,
+}) => {
+  const presence = usePresence(user.uid);
+
+  return (
+    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm flex flex-col justify-between transition-all hover:border-slate-300 dark:hover:border-slate-700">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div
+          onClick={() => onViewProfile(user.uid)}
+          className="flex items-center gap-3 cursor-pointer overflow-hidden flex-1"
+        >
+          <div className="relative shrink-0">
+            <img
+              src={user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`}
+              alt={user.displayName}
+              className="w-12 h-12 rounded-full object-cover border border-slate-200 dark:border-slate-700"
+            />
+            {/* Dynamic Presence Dot */}
+            <span
+              title={presence.isOnline ? 'Online now' : presence.lastSeenText}
+              className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white dark:border-slate-900 ${
+                presence.isOnline ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-600'
+              }`}
+            />
+          </div>
+          <div className="truncate flex-1">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <h4 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                {user.displayName}
+              </h4>
+              <AdminBadge user={user} isFollower={isFollowing} size="xs" />
+            </div>
+            <div className="flex items-center gap-1 text-xs text-slate-400">
+              <span className="truncate">@{user.username}</span>
+              <span>•</span>
+              <span className={presence.isOnline ? 'text-emerald-500 font-medium' : 'text-slate-400'}>
+                {presence.isOnline ? 'Online' : presence.lastSeenText}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <button
+          onClick={onToggleFollow}
+          className={`text-xs px-3 py-1.5 rounded-xl font-semibold transition-all cursor-pointer shrink-0 ${
+            isFollowing
+              ? 'bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 hover:bg-rose-50 hover:text-rose-600'
+              : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm'
+          }`}
+        >
+          {isFollowing ? 'Following' : 'Follow'}
+        </button>
+      </div>
+
+      {user.bio && (
+        <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-2 mb-3">
+          {user.bio}
+        </p>
+      )}
+
+      {/* Instant Action Bar */}
+      <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+        <button
+          onClick={() => onStartChat(user)}
+          className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors cursor-pointer"
+        >
+          <MessageSquare size={15} />
+          <span>Chat</span>
+        </button>
+
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => onInitiateCall(user, 'audio')}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-colors cursor-pointer"
+            title="Audio Call"
+          >
+            <Phone size={16} />
+          </button>
+          <button
+            onClick={() => onInitiateCall(user, 'video')}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-colors cursor-pointer"
+            title="Video Call"
+          >
+            <Video size={16} />
+          </button>
+        </div>
       </div>
     </div>
   );
