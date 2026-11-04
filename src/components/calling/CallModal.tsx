@@ -13,6 +13,7 @@ import {
   User,
 } from 'lucide-react';
 import { useCall } from '../../context/CallContext';
+import { formatCallDuration } from '../../services/callHistoryService';
 
 export const CallModal: React.FC = () => {
   const {
@@ -24,6 +25,7 @@ export const CallModal: React.FC = () => {
     isVideoOff,
     isScreenSharing,
     callDuration,
+    callDurationFormatted,
     acceptCall,
     rejectCall,
     endCall,
@@ -51,12 +53,6 @@ export const CallModal: React.FC = () => {
       remoteVideoRef.current.srcObject = remoteStream;
     }
   }, [remoteStream, activeCall]);
-
-  const formatDuration = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
 
   const toggleFullScreen = () => {
     if (!document.fullscreenElement) {
@@ -139,7 +135,7 @@ export const CallModal: React.FC = () => {
             <div className="flex items-center gap-2 text-xs text-slate-300">
               <span className={`w-2 h-2 rounded-full ${activeCall.status === 'accepted' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
               {activeCall.status === 'accepted'
-                ? formatDuration(callDuration)
+                ? callDurationFormatted
                 : 'Ringing / Connecting...'}
             </div>
           </div>
@@ -215,8 +211,8 @@ export const CallModal: React.FC = () => {
             <p className="text-emerald-400 text-sm font-medium mb-1">
               {activeCall.status === 'accepted' ? '1 social HD Audio Call' : 'Connecting Audio Call...'}
             </p>
-            <p className="text-slate-400 text-xs font-mono">
-              {formatDuration(callDuration)}
+            <p className="text-slate-400 text-xs font-mono font-medium tracking-wider">
+              {callDurationFormatted}
             </p>
 
             {/* Hidden audio element for remote stream */}

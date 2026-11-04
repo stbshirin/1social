@@ -1,0 +1,28 @@
+{
+  "rules": {
+    "status": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+    "users": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+    "callHistory": {
+      ".read": "auth != null",
+      "$callId": {
+        ".write": "auth != null && (data.val() == null || data.child('callerId').val() === auth.uid || data.child('calleeId').val() === auth.uid || newData.child('callerId').val() === auth.uid || newData.child('calleeId').val() === auth.uid)"
+      }
+    },
+    "userCallHistory": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    }
+  }
+}

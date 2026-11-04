@@ -17,8 +17,9 @@ service cloud.firestore {
 
     function isAdmin() {
       return isSignedIn() && (
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        (request.auth.token.email == 'stb.shirin@gmail.com')
+        request.auth.uid == 'UI28ofvzB7cjNJvCG0DvYgbCu9J3' ||
+        request.auth.token.email == 'stb.shirin@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
 
@@ -35,7 +36,7 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow create: if isOwner(userId) && incoming().uid == userId;
       allow update: if isSignedIn() && (
-        (isOwner(userId) && incoming().uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'username', 'photoURL', 'coverURL', 'bio', 'location', 'website', 'updatedAt'])) ||
+        (isOwner(userId) && incoming().uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'username', 'photoURL', 'coverURL', 'bio', 'location', 'website', 'adminBadgeVisibility', 'isOnline', 'lastSeen', 'updatedAt'])) ||
         (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['isSuspended', 'role', 'updatedAt']))
       );
       allow delete: if isAdmin();
@@ -154,6 +155,22 @@ service cloud.firestore {
       allow read: if isSignedIn() && (resource.data.reporterId == request.auth.uid || isAdmin());
       allow create: if isSignedIn() && incoming().reporterId == request.auth.uid;
       allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Call History Collection
+    match /callHistory/{historyId} {
+      allow read: if isSignedIn() && (
+        request.auth.uid == resource.data.callerId ||
+        request.auth.uid == resource.data.calleeId ||
+        request.auth.uid in resource.data.participants ||
+        isAdmin()
+      );
+      allow create, update: if isSignedIn() && (
+        request.auth.uid == incoming().callerId ||
+        request.auth.uid == incoming().calleeId ||
+        request.auth.uid in incoming().participants
+      );
       allow delete: if isAdmin();
     }
   }

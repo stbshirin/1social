@@ -16,7 +16,8 @@ import {
   serverTimestamp,
   onSnapshot,
 } from 'firebase/firestore';
-import { auth, db } from '../firebase/config';
+import { ref as rtdbRef, update as rtdbUpdate } from 'firebase/database';
+import { auth, db, rtdb } from '../firebase/config';
 import { UserProfile } from '../types';
 import {
   getSocialUserDocRef,
@@ -41,7 +42,9 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const ADMIN_EMAIL = 'stb.shirin@gmail.com';
+// Authoritative Main Admin UID and Email configuration
+export const MAIN_ADMIN_UID = 'UI28ofvzB7cjNJvCG0DvYgbCu9J3';
+export const ADMIN_EMAIL = 'stb.shirin@gmail.com';
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -56,7 +59,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
    * Does NOT import old user profile data from the legacy users collection.
    */
   const syncSocialUserProfile = async (user: User, extraName?: string, extraUsername?: string) => {
-    const isUserAdmin = user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+    // Strict Main Admin check based on Firebase Auth UID UI28ofvzB7cjNJvCG0DvYgbCu9J3
+    const isUserAdmin = user.uid === MAIN_ADMIN_UID || user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
     setIsAdmin(isUserAdmin);
 
     const generatedUsername =
@@ -210,6 +214,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!currentUser || !userProfile) return;
     try {
       await updateSocialUserProfile(currentUser.uid, data);
+
+      // Also sync to Realtime Database users/${uid} as required for Privacy & Media
+      try {
+        const rtdbPayload: Record<string, any> = {};
+        if (data.adminBadgeVisibility !== undefined) {
+          rtdbPayload.adminBadgeVisibility = data.adminBadgeVisibility;
+        }
+        if (data.photoURL !== undefined) {
+          rtdbPayload.photoURL = data.photoURL;
+        }
+        if (data.coverURL !== undefined) {
+          rtdbPayload.coverURL = data.coverURL;
+        }
+        if (Object.keys(rtdbPayload).length > 0) {
+          await rtdbUpdate(rtdbRef(rtdb, `users/${currentUser.uid}`), rtdbPayload);
+        }
+      } catch (rtdbErr) {
+        console.warn('RTDB updateUserProfile sync notice:', rtdbErr);
+      }
+
       setUserProfile((prev) => (prev ? { ...prev, ...data } : null));
     } catch (error) {
       console.warn('updateUserProfile error:', error);

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Shield } from 'lucide-react';
-import { useAuth } from '../../context/AuthContext';
+import { useAuth, MAIN_ADMIN_UID } from '../../context/AuthContext';
 import { doc, onSnapshot } from 'firebase/firestore';
-import { db } from '../../firebase/config';
+import { ref as rtdbRef, onValue } from 'firebase/database';
+import { db, rtdb } from '../../firebase/config';
 
 interface AdminBadgeProps {
   user: {
@@ -26,7 +27,11 @@ export const AdminBadge: React.FC<AdminBadgeProps> = ({
   const userId = user.uid || user.id;
   const isOwner = !!(currentUser && userId && currentUser.uid === userId);
 
-  const [role, setRole] = useState<'admin' | 'user' | undefined>(user.role);
+  // Authoritative admin check: Main Admin UID UI28ofvzB7cjNJvCG0DvYgbCu9J3 or explicit role
+  const isMainAdminUid = userId === MAIN_ADMIN_UID;
+  const initialRole = isMainAdminUid ? 'admin' : user.role;
+
+  const [role, setRole] = useState<'admin' | 'user' | undefined>(initialRole);
   const [visibility, setVisibility] = useState<'public' | 'followers' | 'only_me'>(
     user.adminBadgeVisibility || 'public'
   );
@@ -34,13 +39,44 @@ export const AdminBadge: React.FC<AdminBadgeProps> = ({
 
   // Sync props when user object updates
   useEffect(() => {
-    if (user.role !== undefined) setRole(user.role);
-    if (user.adminBadgeVisibility !== undefined) setVisibility(user.adminBadgeVisibility);
-  }, [user.role, user.adminBadgeVisibility]);
+    if (isMainAdminUid) {
+      setRole('admin');
+    } else if (user.role !== undefined) {
+      setRole(user.role);
+    }
+    if (user.adminBadgeVisibility !== undefined) {
+      setVisibility(user.adminBadgeVisibility);
+    }
+  }, [user.role, user.adminBadgeVisibility, isMainAdminUid]);
+
+  // Read privacy setting from Realtime Database users/${userId}/adminBadgeVisibility
+  useEffect(() => {
+    if (!userId) return;
+
+    try {
+      const rtdbVisRef = rtdbRef(rtdb, `users/${userId}/adminBadgeVisibility`);
+      const unsubRtdb = onValue(
+        rtdbVisRef,
+        (snap) => {
+          const val = snap.val();
+          if (val && (val === 'public' || val === 'followers' || val === 'only_me')) {
+            setVisibility(val);
+          }
+        },
+        (err) => {
+          console.warn('RTDB adminBadgeVisibility notice:', err?.message || err);
+        }
+      );
+
+      return () => unsubRtdb();
+    } catch (e) {
+      return () => {};
+    }
+  }, [userId]);
 
   // If role is not provided, listen to user doc in Firestore
   useEffect(() => {
-    if (!userId || user.role !== undefined) return;
+    if (!userId || isMainAdminUid || user.role !== undefined) return;
 
     const userDocRef = doc(db, 'socialApp_users', userId);
     const unsub = onSnapshot(
@@ -58,7 +94,7 @@ export const AdminBadge: React.FC<AdminBadgeProps> = ({
     );
 
     return () => unsub();
-  }, [userId, user.role]);
+  }, [userId, user.role, isMainAdminUid]);
 
   // If visibility is 'followers' and viewer is not the owner and isFollower not provided, verify follower relationship
   useEffect(() => {
@@ -92,9 +128,15 @@ export const AdminBadge: React.FC<AdminBadgeProps> = ({
     return null;
   }
 
-  // 1. Owner can always see their own admin badge
+  // 1. Owner can always see their own admin badge (with privacy hint in title)
   if (isOwner) {
-    return renderBadge(size, className, 'Only you and authorized viewers can see this');
+    const hint =
+      visibility === 'only_me'
+        ? 'Admin Badge (Only you can see this)'
+        : visibility === 'followers'
+        ? 'Admin Badge (Followers only)'
+        : 'Admin Badge (Public)';
+    return renderBadge(size, className, hint);
   }
 
   // 2. Only me: hidden from all other viewers

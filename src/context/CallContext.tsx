@@ -16,6 +16,7 @@ import { useAuth } from './AuthContext';
 import { CallSession, UserProfile } from '../types';
 import { ICE_SERVERS, getMediaStream } from '../services/webrtc';
 import { soundEffects } from '../services/soundEffects';
+import { formatCallDuration, recordCallHistory } from '../services/callHistoryService';
 
 interface CallContextType {
   activeCall: CallSession | null;
@@ -26,6 +27,7 @@ interface CallContextType {
   isVideoOff: boolean;
   isScreenSharing: boolean;
   callDuration: number;
+  callDurationFormatted: string;
   initiateCall: (callee: UserProfile, type: 'audio' | 'video') => Promise<void>;
   acceptCall: () => Promise<void>;
   rejectCall: () => Promise<void>;
@@ -56,6 +58,18 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const timerRef = useRef<any>(null);
   const unsubCallRef = useRef<(() => void) | null>(null);
   const unsubCandidatesRef = useRef<(() => void) | null>(null);
+  const connectedAtRef = useRef<number | null>(null);
+  const callDurationRef = useRef<number>(0);
+  const activeCallRef = useRef<CallSession | null>(null);
+
+  // Sync ref with state
+  useEffect(() => {
+    activeCallRef.current = activeCall;
+  }, [activeCall]);
+
+  useEffect(() => {
+    callDurationRef.current = callDuration;
+  }, [callDuration]);
 
   // Clear timers & streams
   const cleanupMedia = () => {
@@ -80,6 +94,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       pcRef.current.close();
       pcRef.current = null;
     }
+    connectedAtRef.current = null;
+    callDurationRef.current = 0;
+    activeCallRef.current = null;
     setRemoteStream(null);
     setActiveCall(null);
     setIncomingCall(null);
@@ -88,6 +105,39 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsScreenSharing(false);
     setCallDuration(0);
   };
+
+  // Clean exit if page is closed or reloaded
+  useEffect(() => {
+    const handleExit = () => {
+      if (activeCallRef.current) {
+        const cur = activeCallRef.current;
+        const dur = connectedAtRef.current
+          ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
+          : 0;
+        recordCallHistory({
+          callId: cur.id,
+          callerId: cur.callerId,
+          callerName: cur.callerName,
+          callerPhoto: cur.callerPhoto,
+          calleeId: cur.calleeId,
+          calleeName: cur.calleeName,
+          calleePhoto: cur.calleePhoto,
+          type: cur.type,
+          status: 'ended',
+          duration: dur,
+          connectedAt: connectedAtRef.current,
+          endedAt: Date.now(),
+        }).catch(() => {});
+      }
+    };
+
+    window.addEventListener('beforeunload', handleExit);
+    window.addEventListener('pagehide', handleExit);
+    return () => {
+      window.removeEventListener('beforeunload', handleExit);
+      window.removeEventListener('pagehide', handleExit);
+    };
+  }, []);
 
   // Listen for incoming calls for the current user
   useEffect(() => {
@@ -196,6 +246,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
 
       setActiveCall(newCall);
+      activeCallRef.current = newCall;
 
       // Listen for answer and call state changes
       unsubCallRef.current = onSnapshot(
@@ -209,15 +260,42 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const answerDescription = new RTCSessionDescription(data.answer);
             await pc.setRemoteDescription(answerDescription);
 
-            // Start duration timer
+            // Set connected timestamp
+            const connTimestamp = data.connectedAt || Date.now();
+            connectedAtRef.current = connTimestamp;
+            setCallDuration(0);
+
+            // Start accurate duration timer from connection timestamp
             if (!timerRef.current) {
               timerRef.current = setInterval(() => {
-                setCallDuration((prev) => prev + 1);
+                if (connectedAtRef.current) {
+                  const elapsed = Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000));
+                  setCallDuration(elapsed);
+                }
               }, 1000);
             }
-            setActiveCall((prev) => (prev ? { ...prev, status: 'accepted' } : null));
+            setActiveCall((prev) => (prev ? { ...prev, status: 'accepted', connectedAt: connTimestamp } : null));
           } else if (data.status === 'rejected' || data.status === 'ended') {
             soundEffects.playCallEnded();
+            const finalDuration = connectedAtRef.current
+              ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
+              : 0;
+
+            await recordCallHistory({
+              callId,
+              callerId: currentUser.uid,
+              callerName: userProfile.displayName,
+              callerPhoto: userProfile.photoURL,
+              calleeId: callee.uid,
+              calleeName: callee.displayName,
+              calleePhoto: callee.photoURL,
+              type,
+              status: data.status,
+              duration: finalDuration,
+              connectedAt: connectedAtRef.current,
+              endedAt: Date.now(),
+            }).catch(() => {});
+
             cleanupMedia();
           }
         },
@@ -302,30 +380,63 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const answerDescription = await pc.createAnswer();
       await pc.setLocalDescription(answerDescription);
 
+      const connectedNow = Date.now();
+      connectedAtRef.current = connectedNow;
+
       await updateDoc(callDocRef, {
         answer: {
           type: answerDescription.type,
           sdp: answerDescription.sdp,
         },
         status: 'accepted',
+        connectedAt: connectedNow,
         acceptedAt: serverTimestamp(),
       });
 
       soundEffects.playCallConnected();
-      setActiveCall({ ...callToAccept, status: 'accepted' });
+      const updatedAcceptedCall: CallSession = {
+        ...callToAccept,
+        status: 'accepted',
+        connectedAt: connectedNow,
+      };
+      setActiveCall(updatedAcceptedCall);
+      activeCallRef.current = updatedAcceptedCall;
 
       // Start duration timer
+      setCallDuration(0);
       timerRef.current = setInterval(() => {
-        setCallDuration((prev) => prev + 1);
+        if (connectedAtRef.current) {
+          const elapsed = Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000));
+          setCallDuration(elapsed);
+        }
       }, 1000);
 
       // Listen for call termination
       unsubCallRef.current = onSnapshot(
         callDocRef,
-        (snap) => {
+        async (snap) => {
           const data = snap.data();
           if (data && (data.status === 'ended' || data.status === 'rejected')) {
             soundEffects.playCallEnded();
+            const finalDuration = connectedAtRef.current
+              ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
+              : 0;
+
+            await recordCallHistory({
+              callId: callToAccept.id,
+              callerId: callToAccept.callerId,
+              callerName: callToAccept.callerName,
+              callerPhoto: callToAccept.callerPhoto,
+              calleeId: callToAccept.calleeId,
+              calleeName: callToAccept.calleeName,
+              calleePhoto: callToAccept.calleePhoto,
+              type: callToAccept.type,
+              status: data.status,
+              duration: finalDuration,
+              connectedAt: connectedAtRef.current,
+              endedAt: Date.now(),
+            }).catch(() => {});
+
             cleanupMedia();
           }
         },
@@ -367,12 +478,28 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const rejectCall = async () => {
     soundEffects.stopRingtone();
     if (incomingCall) {
+      const callToReject = incomingCall;
       try {
-        const callDocRef = doc(db, 'calls', incomingCall.id);
+        const callDocRef = doc(db, 'calls', callToReject.id);
         await updateDoc(callDocRef, {
           status: 'rejected',
           endedAt: serverTimestamp(),
         });
+
+        await recordCallHistory({
+          callId: callToReject.id,
+          callerId: callToReject.callerId,
+          callerName: callToReject.callerName,
+          callerPhoto: callToReject.callerPhoto,
+          calleeId: callToReject.calleeId,
+          calleeName: callToReject.calleeName,
+          calleePhoto: callToReject.calleePhoto,
+          type: callToReject.type,
+          status: 'rejected',
+          duration: 0,
+          connectedAt: null,
+          endedAt: Date.now(),
+        }).catch(() => {});
       } catch (err) {
         console.warn('Error updating call rejection:', err);
       }
@@ -383,17 +510,37 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // End active call
   const endCall = async () => {
     soundEffects.playCallEnded();
-    if (activeCall) {
+    const curCall = activeCallRef.current || activeCall;
+    const finalDuration = connectedAtRef.current
+      ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
+      : callDurationRef.current || 0;
+
+    if (curCall) {
       try {
-        const callDocRef = doc(db, 'calls', activeCall.id);
+        const callDocRef = doc(db, 'calls', curCall.id);
         await updateDoc(callDocRef, {
           status: 'ended',
-          duration: callDuration,
+          duration: finalDuration,
           endedAt: serverTimestamp(),
         });
       } catch (err) {
-        console.warn('Error updating ended call:', err);
+        console.warn('Error updating ended call in Firestore:', err);
       }
+
+      await recordCallHistory({
+        callId: curCall.id,
+        callerId: curCall.callerId,
+        callerName: curCall.callerName,
+        callerPhoto: curCall.callerPhoto,
+        calleeId: curCall.calleeId,
+        calleeName: curCall.calleeName,
+        calleePhoto: curCall.calleePhoto,
+        type: curCall.type,
+        status: 'ended',
+        duration: finalDuration,
+        connectedAt: connectedAtRef.current,
+        endedAt: Date.now(),
+      }).catch(() => {});
     }
     cleanupMedia();
   };
@@ -501,6 +648,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isVideoOff,
         isScreenSharing,
         callDuration,
+        callDurationFormatted: formatCallDuration(callDuration),
         initiateCall,
         acceptCall,
         rejectCall,

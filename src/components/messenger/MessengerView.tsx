@@ -15,6 +15,10 @@ import {
   X,
   File,
   ArrowLeft,
+  PhoneIncoming,
+  PhoneOutgoing,
+  PhoneMissed,
+  MessageSquare,
 } from 'lucide-react';
 import {
   collection,
@@ -34,12 +38,13 @@ import { db } from '../../firebase/config';
 import { useAuth } from '../../context/AuthContext';
 import { useCall } from '../../context/CallContext';
 import { soundEffects } from '../../services/soundEffects';
-import { Conversation, Message, UserProfile } from '../../types';
+import { Conversation, Message, UserProfile, CallHistoryItem } from '../../types';
 import { handleFirestoreError, OperationType } from '../../firebase/errorHandler';
 import { getSocialUsersCollection } from '../../services/userService';
 import { uploadChatAttachment } from '../../services/storageService';
 import { usePresence } from '../../services/presenceService';
 import { AdminBadge } from '../common/AdminBadge';
+import { subscribeToUserCallHistory, formatCallDuration } from '../../services/callHistoryService';
 
 interface MessengerViewProps {
   initialChatUser?: UserProfile | null;
@@ -58,6 +63,20 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageText, setMessageText] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Sidebar Tabs: Chats vs Calls
+  const [activeSidebarTab, setActiveSidebarTab] = useState<'chats' | 'calls'>('chats');
+  const [callHistory, setCallHistory] = useState<CallHistoryItem[]>([]);
+  const [callSearchQuery, setCallSearchQuery] = useState('');
+
+  // Subscribe to Call History for Current User
+  useEffect(() => {
+    if (!currentUser?.uid) return;
+    const unsub = subscribeToUserCallHistory(currentUser.uid, (history) => {
+      setCallHistory(history);
+    });
+    return () => unsub();
+  }, [currentUser]);
 
   // Voice recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -465,60 +484,145 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
 
   const otherParticipant = selectedConversation ? getOtherParticipant(selectedConversation) : null;
 
+  const filteredConversations = conversations.filter((c) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    const other = getOtherParticipant(c);
+    const title = c.isGroup ? c.groupName : other?.displayName;
+    return title?.toLowerCase().includes(q) || c.lastMessage?.toLowerCase().includes(q);
+  });
+
+  const filteredCallHistory = callHistory.filter((call) => {
+    if (!callSearchQuery.trim()) return true;
+    const q = callSearchQuery.toLowerCase();
+    return (
+      call.callerName?.toLowerCase().includes(q) ||
+      call.calleeName?.toLowerCase().includes(q) ||
+      call.durationFormatted?.toLowerCase().includes(q)
+    );
+  });
+
   return (
     <div className="w-full h-[calc(100vh-8rem)] max-w-6xl mx-auto my-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl overflow-hidden shadow-sm flex flex-col md:flex-row">
-      {/* Left Conversations Sidebar */}
+      {/* Left Conversations & Calls Sidebar */}
       <div
         className={`w-full md:w-80 border-r border-slate-200 dark:border-slate-800 flex flex-col bg-slate-50/50 dark:bg-slate-900/50 ${
           selectedConversation ? 'hidden md:flex' : 'flex'
         }`}
       >
-        {/* Header with New Chat Button */}
-        <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-slate-900 dark:text-white">Messages</h2>
-          <button
-            onClick={() => setShowNewChatModal(true)}
-            className="p-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition-transform active:scale-95 cursor-pointer"
-            title="Start New Chat"
-          >
-            <Plus size={18} />
-          </button>
+        {/* Header with Title and Tabs */}
+        <div className="p-3.5 border-b border-slate-200 dark:border-slate-800">
+          <div className="flex items-center justify-between mb-2.5">
+            <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
+              {activeSidebarTab === 'chats' ? 'Messages' : 'Call History'}
+            </h2>
+            {activeSidebarTab === 'chats' && (
+              <button
+                onClick={() => setShowNewChatModal(true)}
+                className="p-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition-transform active:scale-95 cursor-pointer"
+                title="Start New Chat"
+              >
+                <Plus size={16} />
+              </button>
+            )}
+          </div>
+
+          {/* Segmented Pill Tabs */}
+          <div className="grid grid-cols-2 p-1 bg-slate-200/60 dark:bg-slate-800 rounded-xl text-xs font-semibold">
+            <button
+              onClick={() => setActiveSidebarTab('chats')}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                activeSidebarTab === 'chats'
+                  ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-white shadow-xs font-bold'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <MessageSquare size={14} />
+              <span>Chats</span>
+              {conversations.length > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500">
+                  {conversations.length}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => setActiveSidebarTab('calls')}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                activeSidebarTab === 'calls'
+                  ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-white shadow-xs font-bold'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Phone size={14} />
+              <span>Calls</span>
+              {callHistory.length > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500">
+                  {callHistory.length}
+                </span>
+              )}
+            </button>
+          </div>
         </div>
 
-        {/* Conversation Search */}
+        {/* Search */}
         <div className="p-3 border-b border-slate-200 dark:border-slate-800">
           <div className="relative">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              placeholder="Search conversations..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={activeSidebarTab === 'chats' ? 'Search conversations...' : 'Search call history...'}
+              value={activeSidebarTab === 'chats' ? searchQuery : callSearchQuery}
+              onChange={(e) =>
+                activeSidebarTab === 'chats'
+                  ? setSearchQuery(e.target.value)
+                  : setCallSearchQuery(e.target.value)
+              }
               className="w-full pl-9 pr-3 py-1.5 text-xs rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none"
             />
           </div>
         </div>
 
-        {/* Conversation List */}
+        {/* List: Either Chats or Calls */}
         <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/60">
-          {conversations.length === 0 ? (
+          {activeSidebarTab === 'chats' ? (
+            filteredConversations.length === 0 ? (
+              <div className="p-8 text-center text-slate-400 text-xs">
+                <p>No conversations found.</p>
+                <button
+                  onClick={() => setShowNewChatModal(true)}
+                  className="mt-3 text-indigo-600 dark:text-indigo-400 font-semibold underline cursor-pointer"
+                >
+                  Start a conversation
+                </button>
+              </div>
+            ) : (
+              filteredConversations.map((conv) => (
+                <MessengerConversationItem
+                  key={conv.id}
+                  conv={conv}
+                  isSelected={selectedConversation?.id === conv.id}
+                  onSelect={() => setSelectedConversation(conv)}
+                  other={getOtherParticipant(conv)}
+                />
+              ))
+            )
+          ) : filteredCallHistory.length === 0 ? (
             <div className="p-8 text-center text-slate-400 text-xs">
-              <p>No conversations yet.</p>
-              <button
-                onClick={() => setShowNewChatModal(true)}
-                className="mt-3 text-indigo-600 dark:text-indigo-400 font-semibold underline cursor-pointer"
-              >
-                Start a conversation
-              </button>
+              <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-3 text-slate-400">
+                <Phone size={20} />
+              </div>
+              <p className="font-semibold text-slate-600 dark:text-slate-300">No Call History</p>
+              <p className="mt-1 text-slate-400 text-[11px]">
+                Audio and video calls with friends will automatically appear here with their duration.
+              </p>
             </div>
           ) : (
-            conversations.map((conv) => (
-              <MessengerConversationItem
-                key={conv.id}
-                conv={conv}
-                isSelected={selectedConversation?.id === conv.id}
-                onSelect={() => setSelectedConversation(conv)}
-                other={getOtherParticipant(conv)}
+            filteredCallHistory.map((call) => (
+              <MessengerCallItem
+                key={call.id || call.callId}
+                item={call}
+                currentUserId={currentUser?.uid || ''}
+                onCallBack={(target, type) => initiateCall(target, type)}
               />
             ))
           )}
@@ -975,6 +1079,129 @@ const MessengerConversationItem: React.FC<MessengerConversationItemProps> = ({
         <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
           {conv.lastMessage || 'No messages yet'}
         </p>
+      </div>
+    </div>
+  );
+};
+
+interface MessengerCallItemProps {
+  item: CallHistoryItem;
+  currentUserId: string;
+  onCallBack: (callee: UserProfile, type: 'audio' | 'video') => void;
+}
+
+const MessengerCallItem: React.FC<MessengerCallItemProps> = ({
+  item,
+  currentUserId,
+  onCallBack,
+}) => {
+  const isOutgoing = item.callerId === currentUserId;
+  const otherUid = isOutgoing ? item.calleeId : item.callerId;
+  const otherName = isOutgoing ? item.calleeName : item.callerName;
+  const otherPhoto = isOutgoing ? item.calleePhoto : item.callerPhoto;
+  const presence = usePresence(otherUid);
+
+  const isMissed = item.status === 'rejected' || item.status === 'missed';
+  const durationText = item.durationFormatted || formatCallDuration(item.duration);
+
+  const formatCallDate = (timestamp?: string | number) => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (isToday) return `Today, ${timeStr}`;
+    return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${timeStr}`;
+  };
+
+  const calleeProfile: UserProfile = {
+    id: otherUid,
+    uid: otherUid,
+    displayName: otherName || 'User',
+    username: otherName?.toLowerCase().replace(/\s+/g, '') || 'user',
+    photoURL: otherPhoto,
+    email: '',
+    role: 'user',
+  };
+
+  return (
+    <div className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-100 dark:hover:bg-slate-800/40 transition-colors">
+      <div className="flex items-center gap-3 min-w-0">
+        <div className="relative shrink-0">
+          <img
+            src={otherPhoto || `https://api.dicebear.com/7.x/avataaars/svg?seed=${otherUid}`}
+            alt={otherName}
+            className="w-11 h-11 rounded-full object-cover border border-slate-200 dark:border-slate-700"
+          />
+          <span
+            title={presence.isOnline ? 'Online now' : presence.lastSeenText}
+            className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white dark:border-slate-900 ${
+              presence.isOnline ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-600'
+            }`}
+          />
+        </div>
+
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 truncate">
+            <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+              {otherName}
+            </h4>
+            <AdminBadge user={{ uid: otherUid }} size="xs" />
+          </div>
+
+          <div className="flex items-center gap-1.5 mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+            {/* Status & Direction */}
+            <div className="flex items-center gap-1">
+              {isMissed ? (
+                <>
+                  <PhoneMissed size={12} className="text-rose-500 shrink-0" />
+                  <span className="text-rose-500 font-semibold text-[11px]">Missed</span>
+                </>
+              ) : isOutgoing ? (
+                <>
+                  <PhoneOutgoing size={12} className="text-blue-500 shrink-0" />
+                  <span className="text-blue-500 font-medium text-[11px]">Outgoing</span>
+                </>
+              ) : (
+                <>
+                  <PhoneIncoming size={12} className="text-emerald-500 shrink-0" />
+                  <span className="text-emerald-500 font-medium text-[11px]">Incoming</span>
+                </>
+              )}
+            </div>
+
+            <span className="text-slate-300 dark:text-slate-700">•</span>
+
+            {/* Type & Duration */}
+            <span className="font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+              {durationText}
+            </span>
+
+            <span className="text-slate-300 dark:text-slate-700">•</span>
+
+            <span className="text-[10px] text-slate-400 truncate">
+              {formatCallDate(item.createdAt || item.endedAt)}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Call-Back Action Buttons */}
+      <div className="flex items-center gap-1 shrink-0">
+        <button
+          onClick={() => onCallBack(calleeProfile, 'audio')}
+          className="p-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-950/30 dark:hover:text-emerald-400 transition-colors cursor-pointer"
+          title={`Audio call ${otherName}`}
+        >
+          <Phone size={16} />
+        </button>
+        <button
+          onClick={() => onCallBack(calleeProfile, 'video')}
+          className="p-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-950/30 dark:hover:text-indigo-400 transition-colors cursor-pointer"
+          title={`Video call ${otherName}`}
+        >
+          <Video size={16} />
+        </button>
       </div>
     </div>
   );

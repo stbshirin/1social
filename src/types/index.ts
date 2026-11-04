@@ -107,8 +107,29 @@ export interface CallSession {
   offer?: any;
   answer?: any;
   createdAt: string;
+  connectedAt?: number;
   endedAt?: string;
   duration?: number;
+  durationFormatted?: string;
+}
+
+export interface CallHistoryItem {
+  id: string;
+  callId: string;
+  callerId: string;
+  callerName: string;
+  callerPhoto?: string;
+  calleeId: string;
+  calleeName: string;
+  calleePhoto?: string;
+  type: 'audio' | 'video';
+  status: 'accepted' | 'rejected' | 'missed' | 'ended' | 'outgoing' | 'incoming';
+  duration: number; // In seconds
+  durationFormatted: string; // e.g. "02:15", "00:00"
+  connectedAt?: number | null;
+  endedAt: number | string;
+  createdAt: string;
+  participants: string[];
 }
 
 export interface NotificationItem {
