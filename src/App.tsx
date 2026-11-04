@@ -161,6 +161,7 @@ const MainApp: React.FC = () => {
               onViewAuthorProfile={handleViewUserProfile}
               selectedTag={selectedTag}
               onClearTag={() => setSelectedTag(null)}
+              onSelectTag={(tag) => setSelectedTag(tag)}
             />
           )}
 

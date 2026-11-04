@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Phone, Video, MessageSquare, TrendingUp, UserCheck, UserPlus, Flame } from 'lucide-react';
-import { collection, query, limit, onSnapshot, getDocs, doc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, limit, onSnapshot, getDocs, doc, setDoc, deleteDoc, serverTimestamp, orderBy } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../context/AuthContext';
 import { useCall } from '../../context/CallContext';
@@ -134,13 +134,43 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ onStartChat, onSelec
     }
   };
 
-  const trendingTopics = [
-    { tag: '#1social', count: '14.2K posts' },
-    { tag: '#WebRTC', count: '9.8K posts' },
-    { tag: '#ReactTypeScript', count: '8.1K posts' },
-    { tag: '#Innovation', count: '6.4K posts' },
-    { tag: '#FullStack', count: '5.2K posts' },
-  ];
+  const [trendingTopics, setTrendingTopics] = useState<{ tag: string; count: string }[]>([
+    { tag: '#1social', count: 'Featured' },
+    { tag: '#trending', count: 'Hot' },
+    { tag: '#thoughts', count: 'Feed' },
+    { tag: '#community', count: 'Network' },
+    { tag: '#tech', count: 'Ideas' },
+  ]);
+
+  // Compute real-time trending hashtags from recent posts
+  useEffect(() => {
+    const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(50));
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const counts: Record<string, number> = {};
+        snapshot.docs.forEach((d) => {
+          const text = d.data()?.content || '';
+          const tags = text.match(/#[a-zA-Z0-9_\u0980-\u09FF]+/g);
+          if (tags) {
+            tags.forEach((t: string) => {
+              counts[t] = (counts[t] || 0) + 1;
+            });
+          }
+        });
+        const sorted = Object.entries(counts)
+          .sort((a, b) => b[1] - a[1])
+          .map(([tag, cnt]) => ({ tag, count: `${cnt} ${cnt === 1 ? 'post' : 'posts'}` }));
+        if (sorted.length > 0) {
+          setTrendingTopics(sorted.slice(0, 5));
+        }
+      },
+      (error) => {
+        console.warn('RightSidebar trending listener notice:', error);
+      }
+    );
+    return () => unsub();
+  }, []);
 
   return (
     <aside className="w-80 shrink-0 hidden xl:flex flex-col gap-6 py-6 pl-6 border-l border-slate-200 dark:border-slate-800 min-h-[calc(100vh-4rem)] sticky top-16 overflow-y-auto">

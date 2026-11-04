@@ -1,119 +1,78 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Image, Video, Sparkles, X, Send } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Send, Smile, Hash, Sparkles, X } from 'lucide-react';
 import { collection, addDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../context/AuthContext';
 import { handleFirestoreError, OperationType } from '../../firebase/errorHandler';
-import { uploadPostMedia } from '../../services/storageService';
 
 interface CreatePostCardProps {
   onPostCreated?: () => void;
+  onSelectTag?: (tag: string) => void;
 }
 
-export const CreatePostCard: React.FC<CreatePostCardProps> = ({ onPostCreated }) => {
+const POPULAR_EMOJIS = ['😀', '😂', '😍', '🔥', '👍', '🎉', '🚀', '👏', '❤️', '✨', '💯', '💡', '😎', '🌟', '🙌'];
+const SUGGESTED_HASHTAGS = ['#1social', '#trending', '#thoughts', '#news', '#community', '#tech'];
+
+export const CreatePostCard: React.FC<CreatePostCardProps> = ({ onPostCreated, onSelectTag }) => {
   const { currentUser, userProfile } = useAuth();
   const [content, setContent] = useState('');
-  const [mediaType, setMediaType] = useState<'none' | 'image' | 'video'>('none');
-  const [mediaUrl, setMediaUrl] = useState('');
-  const [mediaPreview, setMediaPreview] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
-  const [showUrlInput, setShowUrlInput] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showHashtagPicker, setShowHashtagPicker] = useState(false);
+  const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Clean up object URL when component unmounts
-  useEffect(() => {
-    return () => {
-      if (mediaPreview && mediaPreview.startsWith('blob:')) {
-        URL.revokeObjectURL(mediaPreview);
+  const insertAtCursor = (textToInsert: string) => {
+    if (!textareaRef.current) {
+      setContent((prev) => prev + textToInsert);
+      return;
+    }
+
+    const start = textareaRef.current.selectionStart;
+    const end = textareaRef.current.selectionEnd;
+    const newText = content.substring(0, start) + textToInsert + content.substring(end);
+    setContent(newText);
+
+    // Reposition cursor after the inserted text
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        const cursorPosition = start + textToInsert.length;
+        textareaRef.current.setSelectionRange(cursorPosition, cursorPosition);
       }
-    };
-  }, [mediaPreview]);
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setUploadError(null);
-    const isVideo = file.type.startsWith('video/');
-    const isImage = file.type.startsWith('image/');
-
-    if (!isImage && !isVideo) {
-      setUploadError('Please select a valid image or video file.');
-      return;
-    }
-
-    if (isImage && file.size > 15 * 1024 * 1024) {
-      setUploadError('Image size exceeds 15MB limit.');
-      return;
-    }
-
-    if (isVideo && file.size > 50 * 1024 * 1024) {
-      setUploadError('Video size exceeds 50MB limit.');
-      return;
-    }
-
-    // Revoke previous blob url if exists
-    if (mediaPreview && mediaPreview.startsWith('blob:')) {
-      URL.revokeObjectURL(mediaPreview);
-    }
-
-    const objectUrl = URL.createObjectURL(file);
-    setSelectedFile(file);
-    setMediaPreview(objectUrl);
-    setMediaType(isVideo ? 'video' : 'image');
+    }, 0);
   };
 
-  const clearMedia = () => {
-    if (mediaPreview && mediaPreview.startsWith('blob:')) {
-      URL.revokeObjectURL(mediaPreview);
-    }
-    setMediaType('none');
-    setMediaUrl('');
-    setMediaPreview(null);
-    setSelectedFile(null);
-    setUploadProgress(null);
-    setUploadError(null);
-    setShowUrlInput(false);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+  const handleAddEmoji = (emoji: string) => {
+    insertAtCursor(emoji);
+    setShowEmojiPicker(false);
+  };
+
+  const handleAddHashtag = (tag: string) => {
+    // Add space before if needed
+    const prefix = content.length > 0 && !content.endsWith(' ') && !content.endsWith('\n') ? ' ' : '';
+    insertAtCursor(`${prefix}${tag} `);
+    setShowHashtagPicker(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser || !userProfile || (!content.trim() && !selectedFile && !mediaUrl)) return;
+    const trimmed = content.trim();
+    if (!currentUser || !userProfile || !trimmed) return;
 
     setLoading(true);
-    setUploadError(null);
+    setErrorNotice(null);
 
     try {
-      let finalMediaUrl = mediaUrl.trim();
-      let finalMediaType = mediaType;
-
-      // If a local file was selected, upload directly to Firebase Storage
-      if (selectedFile) {
-        setUploadProgress(1);
-        const uploadResult = await uploadPostMedia(
-          currentUser.uid,
-          selectedFile,
-          (percent) => setUploadProgress(percent)
-        );
-        finalMediaUrl = uploadResult.url;
-        finalMediaType = uploadResult.type;
-      }
-
       await addDoc(collection(db, 'posts'), {
         authorId: currentUser.uid,
         authorName: userProfile.displayName,
         authorUsername: userProfile.username,
         authorPhotoURL: userProfile.photoURL || '',
-        content: content.trim(),
-        mediaType: finalMediaType,
-        mediaUrl: finalMediaUrl,
+        content: trimmed,
+        mediaType: 'none',
+        mediaUrl: '',
         likesCount: 0,
         commentsCount: 0,
         sharesCount: 0,
@@ -123,15 +82,15 @@ export const CreatePostCard: React.FC<CreatePostCardProps> = ({ onPostCreated })
       });
 
       setContent('');
-      clearMedia();
+      setShowEmojiPicker(false);
+      setShowHashtagPicker(false);
       onPostCreated?.();
     } catch (err: any) {
-      console.error('Error creating post:', err);
-      setUploadError(err.message || 'Failed to publish post. Please check connection and retry.');
+      console.error('Error creating text post:', err);
+      setErrorNotice(err.message || 'Failed to publish post. Please check your connection and retry.');
       handleFirestoreError(err, OperationType.CREATE, 'posts');
     } finally {
       setLoading(false);
-      setUploadProgress(null);
     }
   };
 
@@ -147,130 +106,147 @@ export const CreatePostCard: React.FC<CreatePostCardProps> = ({ onPostCreated })
         <div className="flex-1">
           <form onSubmit={handleSubmit}>
             <textarea
+              ref={textareaRef}
               rows={3}
               value={content}
+              maxLength={2000}
               onChange={(e) => setContent(e.target.value)}
-              placeholder={`What's on your mind, ${userProfile?.displayName?.split(' ')[0] || ''}?`}
+              placeholder={`What's on your mind, ${userProfile?.displayName?.split(' ')[0] || ''}? Share your thoughts or #hashtags...`}
               className="w-full bg-transparent resize-none border-none outline-none text-sm sm:text-base text-slate-900 dark:text-white placeholder-slate-400 focus:ring-0 p-0"
             />
 
-            {/* Media Preview Box */}
-            {mediaPreview && (
-              <div className="relative mt-3 rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-950 max-h-72">
-                <button
-                  type="button"
-                  onClick={clearMedia}
-                  className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 hover:bg-black/80 text-white z-10 cursor-pointer"
-                  title="Remove media"
-                >
-                  <X size={16} />
-                </button>
-                {mediaType === 'image' ? (
-                  <img
-                    src={mediaPreview}
-                    alt="Upload preview"
-                    className="w-full h-auto max-h-72 object-contain mx-auto"
-                  />
-                ) : (
-                  <video
-                    src={mediaPreview}
-                    controls
-                    className="w-full h-auto max-h-72 object-contain mx-auto"
-                  />
-                )}
+            {/* Quick Hashtags Suggestions Bar */}
+            {showHashtagPicker && (
+              <div className="mt-2.5 p-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 animate-in fade-in zoom-in-95 duration-100">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                    <Hash size={12} className="text-indigo-500" />
+                    Insert Popular Hashtag
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowHashtagPicker(false)}
+                    className="text-slate-400 hover:text-slate-200 cursor-pointer"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {SUGGESTED_HASHTAGS.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => handleAddHashtag(tag)}
+                      className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/50 dark:hover:bg-indigo-900/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200/60 dark:border-indigo-800/50 transition-colors cursor-pointer"
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
-            {/* Optional URL input for direct web media */}
-            {showUrlInput && !mediaPreview && (
-              <div className="mt-3 flex items-center gap-2">
-                <input
-                  type="url"
-                  placeholder="Paste direct image or video URL..."
-                  value={mediaUrl}
-                  onChange={(e) => {
-                    setMediaUrl(e.target.value);
-                    setMediaPreview(e.target.value);
-                    setMediaType(e.target.value.match(/\.(mp4|webm|mov)$/i) ? 'video' : 'image');
+            {/* Quick Emoji Picker Row */}
+            {showEmojiPicker && (
+              <div className="mt-2.5 p-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 animate-in fade-in zoom-in-95 duration-100">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                    <Smile size={12} className="text-amber-500" />
+                    Insert Emoji
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowEmojiPicker(false)}
+                    className="text-slate-400 hover:text-slate-200 cursor-pointer"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5 text-lg">
+                  {POPULAR_EMOJIS.map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => handleAddEmoji(emoji)}
+                      className="p-1.5 rounded-xl hover:bg-white dark:hover:bg-slate-700 transition-transform active:scale-125 cursor-pointer"
+                      title={emoji}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Error Notice */}
+            {errorNotice && (
+              <p className="mt-2 text-xs text-rose-500 font-medium">{errorNotice}</p>
+            )}
+
+            {/* Bottom Toolbar & Text Post Button */}
+            <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {/* Emoji Trigger */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowEmojiPicker(!showEmojiPicker);
+                    setShowHashtagPicker(false);
                   }}
-                  className="flex-1 px-3 py-1.5 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowUrlInput(false)}
-                  className="p-1.5 text-slate-400 hover:text-slate-200 cursor-pointer"
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                    showEmojiPicker
+                      ? 'bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                  title="Add Emoji"
                 >
-                  <X size={14} />
-                </button>
-              </div>
-            )}
-
-            {/* Hidden native file input */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*,video/*"
-              className="hidden"
-              onChange={handleFileUpload}
-            />
-
-            {/* Upload Progress Bar */}
-            {uploadProgress !== null && (
-              <div className="mt-3">
-                <div className="flex items-center justify-between text-xs text-indigo-500 font-medium mb-1">
-                  <span>Uploading media to Firebase Storage...</span>
-                  <span>{uploadProgress}%</span>
-                </div>
-                <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-indigo-600 transition-all duration-200"
-                    style={{ width: `${uploadProgress}%` }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Error Message */}
-            {uploadError && (
-              <p className="mt-2 text-xs text-rose-500 font-medium">{uploadError}</p>
-            )}
-
-            {/* Bottom Toolbar & Post Button */}
-            <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-colors cursor-pointer"
-                >
-                  <Image size={17} />
-                  <span>Photo / Video</span>
+                  <Smile size={16} className="text-amber-500" />
+                  <span>Emoji</span>
                 </button>
 
+                {/* Hashtag Trigger */}
                 <button
                   type="button"
-                  onClick={() => setShowUrlInput(!showUrlInput)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-colors cursor-pointer"
+                  onClick={() => {
+                    setShowHashtagPicker(!showHashtagPicker);
+                    setShowEmojiPicker(false);
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                    showHashtagPicker
+                      ? 'bg-indigo-100 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                  title="Add Hashtags"
                 >
-                  <Sparkles size={17} />
-                  <span>Media URL</span>
+                  <Hash size={16} className="text-indigo-500" />
+                  <span>Hashtags</span>
                 </button>
               </div>
 
-              <button
-                type="submit"
-                disabled={loading || (!content.trim() && !mediaUrl && !selectedFile)}
-                className="flex items-center gap-2 py-2 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs shadow-md shadow-indigo-600/20 transition-all cursor-pointer"
-              >
-                {loading ? (
-                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <>
-                    <span>Post</span>
-                    <Send size={14} />
-                  </>
+              <div className="flex items-center gap-3">
+                {/* Character Count */}
+                {content.length > 0 && (
+                  <span className={`text-[11px] font-mono ${content.length > 1800 ? 'text-amber-500 font-bold' : 'text-slate-400'}`}>
+                    {content.length}/2000
+                  </span>
                 )}
-              </button>
+
+                {/* Submit Post Button */}
+                <button
+                  type="submit"
+                  disabled={loading || !content.trim()}
+                  className="flex items-center gap-2 py-2 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs shadow-md shadow-indigo-600/20 transition-all cursor-pointer"
+                >
+                  {loading ? (
+                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <>
+                      <span>Post</span>
+                      <Send size={14} />
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </form>
         </div>

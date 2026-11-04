@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { collection, query, orderBy, onSnapshot, limit } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../context/AuthContext';
@@ -6,13 +6,14 @@ import { Post } from '../../types';
 import { CreatePostCard } from './CreatePostCard';
 import { PostCard } from './PostCard';
 import { PWAInstallBanner } from '../pwa/PWAInstallBanner';
-import { Sparkles, TrendingUp, Users } from 'lucide-react';
+import { Sparkles, TrendingUp, Hash } from 'lucide-react';
 
 interface FeedViewProps {
   onOpenReportModal: (postId: string) => void;
   onViewAuthorProfile?: (authorId: string) => void;
   selectedTag?: string | null;
   onClearTag?: () => void;
+  onSelectTag?: (tag: string) => void;
 }
 
 export const FeedView: React.FC<FeedViewProps> = ({
@@ -20,10 +21,11 @@ export const FeedView: React.FC<FeedViewProps> = ({
   onViewAuthorProfile,
   selectedTag,
   onClearTag,
+  onSelectTag,
 }) => {
   const { currentUser } = useAuth();
   const [posts, setPosts] = useState<Post[]>([]);
-  const [filter, setFilter] = useState<'latest' | 'trending' | 'following'>('latest');
+  const [filter, setFilter] = useState<'latest' | 'trending'>('latest');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -48,11 +50,39 @@ export const FeedView: React.FC<FeedViewProps> = ({
     return () => unsubscribe();
   }, [currentUser]);
 
-  // Filter posts based on tab or selected tag
+  // Compute trending hashtags from the loaded posts
+  const trendingTagsFromPosts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    posts.forEach((p) => {
+      const tags = p.content?.match(/#[a-zA-Z0-9_\u0980-\u09FF]+/g);
+      if (tags) {
+        tags.forEach((tag) => {
+          counts[tag] = (counts[tag] || 0) + 1;
+        });
+      }
+    });
+
+    const sorted = Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([tag, count]) => ({ tag, count }));
+
+    if (sorted.length > 0) {
+      return sorted.slice(0, 6);
+    }
+
+    return [
+      { tag: '#1social', count: 1 },
+      { tag: '#trending', count: 1 },
+      { tag: '#thoughts', count: 1 },
+      { tag: '#community', count: 1 },
+    ];
+  }, [posts]);
+
+  // Filter posts based on selected hashtag or tab
   const displayedPosts = posts
     .filter((p) => {
       if (selectedTag) {
-        return p.content.toLowerCase().includes(selectedTag.toLowerCase());
+        return p.content?.toLowerCase().includes(selectedTag.toLowerCase());
       }
       return true;
     })
@@ -83,8 +113,52 @@ export const FeedView: React.FC<FeedViewProps> = ({
       {/* PWA Install Banner */}
       <PWAInstallBanner />
 
-      {/* Create Post Widget */}
-      <CreatePostCard />
+      {/* Text-Only Post Composer */}
+      <CreatePostCard onSelectTag={onSelectTag} />
+
+      {/* Trending Hashtags Quick Filter Bar */}
+      {trendingTagsFromPosts.length > 0 && (
+        <div className="mb-5 flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+          <div className="flex items-center gap-1 text-xs font-bold text-slate-500 dark:text-slate-400 shrink-0 mr-1">
+            <Hash size={13} className="text-indigo-500" />
+            <span>Trending:</span>
+          </div>
+          {trendingTagsFromPosts.map(({ tag, count }) => {
+            const isSelected = selectedTag?.toLowerCase() === tag.toLowerCase();
+            return (
+              <button
+                key={tag}
+                type="button"
+                onClick={() => {
+                  if (isSelected) {
+                    onClearTag?.();
+                  } else {
+                    onSelectTag?.(tag);
+                  }
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold shrink-0 transition-all cursor-pointer ${
+                  isSelected
+                    ? 'bg-indigo-600 text-white shadow-sm ring-2 ring-indigo-400'
+                    : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-indigo-400'
+                }`}
+              >
+                <span>{tag}</span>
+                {count > 1 && (
+                  <span
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                      isSelected
+                        ? 'bg-indigo-700 text-white'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-400'
+                    }`}
+                  >
+                    {count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Feed Filter Bar */}
       <div className="flex items-center gap-2 mb-6 bg-slate-100 dark:bg-slate-900 p-1.5 rounded-2xl border border-slate-200 dark:border-slate-800">
@@ -140,7 +214,9 @@ export const FeedView: React.FC<FeedViewProps> = ({
           </div>
           <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1">No posts found</h3>
           <p className="text-xs text-slate-400 max-w-sm mx-auto">
-            Be the very first one to publish a post, photo, or thought to the 1 social network!
+            {selectedTag
+              ? `No posts tagged with ${selectedTag} yet. Write the first one!`
+              : 'Share your thoughts, emojis, or #hashtags on the 1 social network!'}
           </p>
         </div>
       ) : (
@@ -151,6 +227,7 @@ export const FeedView: React.FC<FeedViewProps> = ({
               post={post}
               onOpenReportModal={onOpenReportModal}
               onViewAuthorProfile={onViewAuthorProfile}
+              onSelectTag={onSelectTag}
             />
           ))}
         </div>

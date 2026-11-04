@@ -34,12 +34,14 @@ interface PostCardProps {
   post: Post;
   onOpenReportModal: (postId: string) => void;
   onViewAuthorProfile?: (authorId: string) => void;
+  onSelectTag?: (tag: string) => void;
 }
 
 export const PostCard: React.FC<PostCardProps> = ({
   post,
   onOpenReportModal,
   onViewAuthorProfile,
+  onSelectTag,
 }) => {
   const { currentUser, userProfile, isAdmin } = useAuth();
 
@@ -248,6 +250,30 @@ export const PostCard: React.FC<PostCardProps> = ({
     }
   };
 
+  // Render text content with interactive clickable hashtags
+  const renderContentWithHashtags = (text: string) => {
+    if (!text) return null;
+    const parts = text.split(/(#[a-zA-Z0-9_\u0980-\u09FF]+)/g);
+    return parts.map((part, index) => {
+      if (part.startsWith('#') && part.length > 1) {
+        return (
+          <span
+            key={index}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectTag?.(part);
+            }}
+            className="text-indigo-600 dark:text-indigo-400 font-semibold hover:underline cursor-pointer transition-colors"
+            title={`Filter posts by ${part}`}
+          >
+            {part}
+          </span>
+        );
+      }
+      return <React.Fragment key={index}>{part}</React.Fragment>;
+    });
+  };
+
   return (
     <article className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-4 sm:p-6 shadow-sm mb-5 transition-colors">
       {/* Header with Author and Options */}
@@ -357,7 +383,7 @@ export const PostCard: React.FC<PostCardProps> = ({
         </div>
       ) : (
         <p className="text-sm sm:text-base text-slate-800 dark:text-slate-200 whitespace-pre-wrap leading-relaxed mb-4">
-          {post.content}
+          {renderContentWithHashtags(post.content)}
         </p>
       )}
 
