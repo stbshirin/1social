@@ -7,11 +7,77 @@ import { useCall } from '../../context/CallContext';
 import { UserProfile, Follow } from '../../types';
 
 import { getSocialUsersCollection } from '../../services/userService';
+import { usePresence } from '../../services/presenceService';
 
 interface RightSidebarProps {
   onStartChat: (user: UserProfile) => void;
   onSelectTag?: (tag: string) => void;
 }
+
+const QuickConnectUserRow: React.FC<{
+  user: UserProfile;
+  onStartChat: (user: UserProfile) => void;
+  onAudioCall: (user: UserProfile) => void;
+  onVideoCall: (user: UserProfile) => void;
+}> = ({ user, onStartChat, onAudioCall, onVideoCall }) => {
+  const presence = usePresence(user.uid);
+
+  return (
+    <div className="flex items-center justify-between p-2 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors group">
+      <div
+        onClick={() => onStartChat(user)}
+        className="flex items-center gap-2.5 cursor-pointer overflow-hidden flex-1 mr-2"
+      >
+        <div className="relative shrink-0">
+          <img
+            src={user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`}
+            alt={user.displayName}
+            className="w-9 h-9 rounded-full object-cover border border-slate-200 dark:border-slate-700"
+          />
+          <span
+            title={presence.isOnline ? 'Online now' : presence.lastSeenText}
+            className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 ${
+              presence.isOnline ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-600'
+            }`}
+          />
+        </div>
+        <div className="truncate">
+          <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
+            {user.displayName}
+          </p>
+          <p className="text-[11px] text-slate-400 truncate">
+            {presence.isOnline ? 'Active now' : `@${user.username}`}
+          </p>
+        </div>
+      </div>
+
+      {/* Instant Actions: Audio call, Video call, Chat */}
+      <div className="flex items-center gap-1 shrink-0">
+        <button
+          onClick={() => onAudioCall(user)}
+          className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors cursor-pointer"
+          title="Audio Call"
+        >
+          <Phone size={15} />
+        </button>
+        <button
+          onClick={() => onVideoCall(user)}
+          className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-colors cursor-pointer"
+          title="Video Call"
+        >
+          <Video size={15} />
+        </button>
+        <button
+          onClick={() => onStartChat(user)}
+          className="p-1.5 rounded-lg text-slate-400 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-500/10 transition-colors cursor-pointer"
+          title="Open Chat"
+        >
+          <MessageSquare size={15} />
+        </button>
+      </div>
+    </div>
+  );
+};
 
 export const RightSidebar: React.FC<RightSidebarProps> = ({ onStartChat, onSelectTag }) => {
   const { currentUser } = useAuth();
@@ -89,59 +155,17 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ onStartChat, onSelec
         </div>
 
         {users.length === 0 ? (
-          <p className="text-xs text-slate-400 py-3 text-center">No other users online yet.</p>
+          <p className="text-xs text-slate-400 py-3 text-center">No other users available yet.</p>
         ) : (
           <div className="space-y-3">
             {users.slice(0, 5).map((u) => (
-              <div
+              <QuickConnectUserRow
                 key={u.uid}
-                className="flex items-center justify-between p-2 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors group"
-              >
-                <div
-                  onClick={() => onStartChat(u)}
-                  className="flex items-center gap-2.5 cursor-pointer overflow-hidden flex-1 mr-2"
-                >
-                  <div className="relative shrink-0">
-                    <img
-                      src={u.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.uid}`}
-                      alt={u.displayName}
-                      className="w-9 h-9 rounded-full object-cover border border-slate-200 dark:border-slate-700"
-                    />
-                    <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white dark:border-slate-900" />
-                  </div>
-                  <div className="truncate">
-                    <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
-                      {u.displayName}
-                    </p>
-                    <p className="text-[11px] text-slate-400 truncate">@{u.username}</p>
-                  </div>
-                </div>
-
-                {/* Instant Actions: Audio call, Video call, Chat */}
-                <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    onClick={() => initiateCall(u, 'audio')}
-                    className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors cursor-pointer"
-                    title="Audio Call"
-                  >
-                    <Phone size={15} />
-                  </button>
-                  <button
-                    onClick={() => initiateCall(u, 'video')}
-                    className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-colors cursor-pointer"
-                    title="Video Call"
-                  >
-                    <Video size={15} />
-                  </button>
-                  <button
-                    onClick={() => onStartChat(u)}
-                    className="p-1.5 rounded-lg text-slate-400 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-500/10 transition-colors cursor-pointer"
-                    title="Open Chat"
-                  >
-                    <MessageSquare size={15} />
-                  </button>
-                </div>
-              </div>
+                user={u}
+                onStartChat={onStartChat}
+                onAudioCall={(target) => initiateCall(target, 'audio')}
+                onVideoCall={(target) => initiateCall(target, 'video')}
+              />
             ))}
           </div>
         )}

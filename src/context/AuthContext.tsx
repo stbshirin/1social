@@ -25,6 +25,7 @@ import {
   createSocialUserProfile,
   updateSocialUserProfile,
 } from '../services/userService';
+import { setExplicitOffline } from '../services/presenceService';
 
 interface AuthContextType {
   currentUser: User | null;
@@ -201,6 +202,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logOut = async () => {
+    if (currentUser?.uid) {
+      await setExplicitOffline(currentUser.uid).catch(() => {});
+    }
     await signOut(auth);
     setUserProfile(null);
     setIsAdmin(false);
