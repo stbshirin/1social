@@ -49,6 +49,24 @@ interface CallContextType {
 
 const CallContext = createContext<CallContextType | undefined>(undefined);
 
+/**
+ * Truly non-blocking RTDB operation wrapper with a 1.2s timeout safety net.
+ * Guarantees that whether RTDB is provisioned, down, or 404, WebRTC signaling
+ * and Firestore operations are never paused or delayed.
+ */
+function safeRtdbOp(operation: () => Promise<any>): void {
+  try {
+    Promise.race([
+      operation(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('RTDB timeout')), 1200)),
+    ]).catch(() => {
+      // Ignored non-blockingly
+    });
+  } catch {
+    // Ignored non-blockingly
+  }
+}
+
 export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser, userProfile } = useAuth();
   const [activeCall, setActiveCall] = useState<CallSession | null>(null);
@@ -64,7 +82,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [callDuration, setCallDuration] = useState(0);
 
-  // Persistent refs to avoid closure stale state
+  // Persistent refs to avoid stale closure states
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -76,6 +94,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const callDurationRef = useRef<number>(0);
   const activeCallRef = useRef<CallSession | null>(null);
   const isCleaningUpRef = useRef<boolean>(false);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
 
   // Keep refs synchronized
   useEffect(() => {
@@ -118,10 +137,10 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Cancel RTDB onDisconnect if call was active
     if (activeCallRef.current?.id) {
-      try {
-        const callStatusRef = rtdbRef(rtdb, `calls/${activeCallRef.current.id}/status`);
-        rtdbOnDisconnect(callStatusRef).cancel().catch(() => {});
-      } catch (e) {}
+      safeRtdbOp(() => {
+        const callStatusRef = rtdbRef(rtdb, `calls/${activeCallRef.current?.id}/status`);
+        return rtdbOnDisconnect(callStatusRef).cancel();
+      });
     }
 
     // Immediately stop local media hardware (camera LED & microphone turn off)
@@ -152,6 +171,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       pcRef.current = null;
     }
 
+    pendingCandidatesRef.current = [];
     connectedAtRef.current = null;
     callDurationRef.current = 0;
     activeCallRef.current = null;
@@ -174,14 +194,14 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
           : 0;
 
-        try {
+        safeRtdbOp(() =>
           rtdbUpdate(rtdbRef(rtdb, `calls/${cur.id}`), {
             status: 'ended',
             endedBy: currentUser?.uid || '',
             endedAt: Date.now(),
             duration: dur,
-          }).catch(() => {});
-        } catch (e) {}
+          })
+        );
 
         recordCallHistory({
           callId: cur.id,
@@ -210,75 +230,138 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [currentUser?.uid]);
 
-  // Reliable incoming calls listener using Firestore primary + RTDB accelerator
+  // Robust incoming calls listener (Firestore primary + RTDB accelerator + Visibility handling)
   useEffect(() => {
     if (!currentUser?.uid) return;
+    const myUid = currentUser.uid.trim();
+    if (!myUid) return;
 
-    // 1. Authoritative Firestore incoming calls listener
-    const q = query(
-      collection(db, 'calls'),
-      where('calleeId', '==', currentUser.uid),
-      where('status', '==', 'ringing')
-    );
-
-    const unsubFirestore = onSnapshot(
-      q,
-      (snapshot) => {
-        if (!snapshot.empty) {
-          const callDoc = snapshot.docs[0];
-          const data = { id: callDoc.id, ...callDoc.data() } as CallSession;
-          // Only show incoming if we're not currently on an active call
-          if (!activeCallRef.current || activeCallRef.current.status !== 'accepted') {
-            setIncomingCall((prev) => {
-              if (prev?.id === data.id) return prev;
-              soundEffects.startIncomingRingtone();
-              return data;
-            });
-          }
-        } else {
-          // If no ringing calls for this user in Firestore, dismiss incoming screen and stop ringtone
-          setIncomingCall((prev) => {
-            if (prev) {
-              soundEffects.stopRingtone();
-            }
-            return null;
-          });
-        }
-      },
-      (error) => {
-        console.warn('Firestore incoming calls listener notice:', error?.message || error);
-      }
-    );
-
-    // 2. Non-blocking RTDB incoming accelerator
+    let isMounted = true;
+    let unsubFirestore: (() => void) | null = null;
     let unsubRtdb: (() => void) | null = null;
-    try {
-      const userCallsNode = rtdbRef(rtdb, `userCalls/${currentUser.uid}`);
-      unsubRtdb = rtdbOnValue(
-        userCallsNode,
+
+    const setupIncomingListeners = () => {
+      if (unsubFirestore) {
+        unsubFirestore();
+        unsubFirestore = null;
+      }
+      if (unsubRtdb) {
+        try {
+          unsubRtdb();
+        } catch (e) {}
+        unsubRtdb = null;
+      }
+
+      // 1. Authoritative Firestore incoming calls listener
+      // Filter by calleeId == myUid (single-field equality query, never requires composite index)
+      const q = query(collection(db, 'calls'), where('calleeId', '==', myUid));
+
+      unsubFirestore = onSnapshot(
+        q,
         (snapshot) => {
-          const data = snapshot.val();
-          if (data && typeof data === 'object') {
-            const callList = Object.values(data) as CallSession[];
-            const incoming = callList.find((c) => c.status === 'ringing' || c.status === 'offering');
-            if (incoming && (!activeCallRef.current || activeCallRef.current.status !== 'accepted')) {
+          if (!isMounted) return;
+          const now = Date.now();
+
+          // Find active ringing/offering calls with an offer that are not expired (< 60s)
+          const ringingCalls = snapshot.docs
+            .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as CallSession))
+            .filter((c) => {
+              if (c.status !== 'ringing' && c.status !== 'offering') return false;
+              if (!c.offer) return false;
+
+              // Validate age: ignore calls older than 60 seconds
+              let callTime = 0;
+              if (c.createdAt) {
+                if (typeof c.createdAt === 'number') {
+                  callTime = c.createdAt;
+                } else if (typeof (c.createdAt as any)?.toMillis === 'function') {
+                  callTime = (c.createdAt as any).toMillis();
+                } else {
+                  callTime = new Date(c.createdAt as any).getTime();
+                }
+              }
+              if (callTime && now - callTime > 60000) {
+                return false;
+              }
+              return true;
+            });
+
+          if (ringingCalls.length > 0) {
+            // Pick latest call
+            const latest = ringingCalls[ringingCalls.length - 1];
+
+            // Only show incoming screen if not currently on an accepted active call
+            if (!activeCallRef.current || activeCallRef.current.status !== 'accepted') {
               setIncomingCall((prev) => {
-                if (prev?.id === incoming.id) return prev;
+                if (prev?.id === latest.id) return prev;
                 soundEffects.startIncomingRingtone();
-                return incoming;
+                return latest;
               });
             }
+          } else {
+            // Dismiss incoming screen if no ringing calls remain
+            setIncomingCall((prev) => {
+              if (prev) {
+                soundEffects.stopRingtone();
+              }
+              return null;
+            });
           }
         },
         (error) => {
-          console.warn('RTDB incoming call notice (using Firestore):', error?.message || error);
+          console.warn('Firestore incoming calls listener notice:', error?.message || error);
         }
       );
-    } catch (e) {}
+
+      // 2. Non-blocking RTDB incoming accelerator
+      try {
+        const userCallsNode = rtdbRef(rtdb, `userCalls/${myUid}`);
+        unsubRtdb = rtdbOnValue(
+          userCallsNode,
+          (snapshot) => {
+            if (!isMounted) return;
+            const data = snapshot.val();
+            if (data && typeof data === 'object') {
+              const callList = Object.values(data) as CallSession[];
+              const incoming = callList.find(
+                (c) => (c.status === 'ringing' || c.status === 'offering') && c.offer
+              );
+              if (incoming && (!activeCallRef.current || activeCallRef.current.status !== 'accepted')) {
+                setIncomingCall((prev) => {
+                  if (prev?.id === incoming.id) return prev;
+                  soundEffects.startIncomingRingtone();
+                  return incoming;
+                });
+              }
+            }
+          },
+          (error) => {
+            console.warn('RTDB incoming call notice:', error?.message || error);
+          }
+        );
+      } catch (e) {}
+    };
+
+    setupIncomingListeners();
+
+    // Re-verify and reconnect when switching back to app foreground from background/lock
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        setupIncomingListeners();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      unsubFirestore();
-      if (unsubRtdb) unsubRtdb();
+      isMounted = false;
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (unsubFirestore) unsubFirestore();
+      if (unsubRtdb) {
+        try {
+          unsubRtdb();
+        } catch (e) {}
+      }
     };
   }, [currentUser?.uid]);
 
@@ -286,9 +369,26 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const initiateCall = async (callee: UserProfile, type: 'audio' | 'video') => {
     if (!currentUser) return;
 
-    const myName = userProfile?.displayName || currentUser.displayName || currentUser.email?.split('@')[0] || 'User';
-    const myUsername = userProfile?.username || currentUser.email?.split('@')[0] || `user_${currentUser.uid.slice(0, 5)}`;
-    const myPhoto = userProfile?.photoURL || currentUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${currentUser.uid}`;
+    // Normalize caller and callee UIDs with fallbacks
+    const targetCalleeUid = (callee.uid || callee.id || (callee as any)?.userId || '').trim();
+    if (!targetCalleeUid || targetCalleeUid === currentUser.uid) {
+      console.warn('Invalid callee target for initiateCall:', callee);
+      return;
+    }
+
+    const myName =
+      userProfile?.displayName ||
+      currentUser.displayName ||
+      currentUser.email?.split('@')[0] ||
+      'User';
+    const myUsername =
+      userProfile?.username ||
+      currentUser.email?.split('@')[0] ||
+      `user_${currentUser.uid.slice(0, 5)}`;
+    const myPhoto =
+      userProfile?.photoURL ||
+      currentUser.photoURL ||
+      `https://api.dicebear.com/7.x/avataaars/svg?seed=${currentUser.uid}`;
 
     const callDocRef = doc(collection(db, 'calls'));
     const callId = callDocRef.id;
@@ -303,10 +403,12 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       callerName: myName,
       callerUsername: myUsername,
       callerPhoto: myPhoto,
-      calleeId: callee.uid,
+      calleeId: targetCalleeUid,
       calleeName: callee.displayName || '1 social Member',
       calleeUsername: callee.username || 'user',
-      calleePhoto: callee.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${callee.uid}`,
+      calleePhoto:
+        callee.photoURL ||
+        `https://api.dicebear.com/7.x/avataaars/svg?seed=${targetCalleeUid}`,
       type,
       status: 'ringing',
       createdAt: new Date().toISOString(),
@@ -314,6 +416,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setActiveCall(initialCallData);
     activeCallRef.current = initialCallData;
+    pendingCandidatesRef.current = [];
 
     try {
       // STEP 2: Acquire Media Stream with Graceful Fallback
@@ -344,12 +447,16 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setRemoteStream(remote);
 
       pc.ontrack = (event) => {
-        event.streams[0].getTracks().forEach((track) => {
-          remote.addTrack(track);
-        });
+        if (event.streams && event.streams[0]) {
+          event.streams[0].getTracks().forEach((track) => {
+            remote.addTrack(track);
+          });
+        } else if (event.track) {
+          remote.addTrack(event.track);
+        }
       };
 
-      // Collect ICE candidates
+      // Collect local ICE candidates and post to Firestore
       pc.onicecandidate = async (event) => {
         if (event.candidate) {
           try {
@@ -387,20 +494,16 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
 
       // Secondary non-blocking write to Realtime Database
-      try {
+      safeRtdbOp(() => {
         const rtdbCallRef = rtdbRef(rtdb, `calls/${callId}`);
-        const rtdbCalleeCallRef = rtdbRef(rtdb, `userCalls/${callee.uid}/${callId}`);
-
-        await Promise.all([
+        const rtdbCalleeCallRef = rtdbRef(rtdb, `userCalls/${targetCalleeUid}/${callId}`);
+        return Promise.all([
           rtdbSet(rtdbCallRef, { ...fullCallData, createdAt: Date.now() }),
           rtdbSet(rtdbCalleeCallRef, { ...fullCallData, createdAt: Date.now() }),
         ]);
-
-        rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callId}/status`)).set('ended').catch(() => {});
-        rtdbOnDisconnect(rtdbCalleeCallRef).remove().catch(() => {});
-      } catch (rtdbErr) {
-        console.warn('RTDB non-blocking write notice:', rtdbErr);
-      }
+      });
+      safeRtdbOp(() => rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callId}/status`)).set('ended'));
+      safeRtdbOp(() => rtdbOnDisconnect(rtdbRef(rtdb, `userCalls/${targetCalleeUid}/${callId}`)).remove());
 
       // Handler when call is accepted by remote user
       const handleRemoteAccepted = async (answer: any, connectedAt?: number) => {
@@ -409,6 +512,18 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         soundEffects.playCallConnected();
         const answerDescription = new RTCSessionDescription(answer);
         await pcRef.current.setRemoteDescription(answerDescription);
+
+        // Flush any ICE candidates that arrived before remote description was set
+        while (pendingCandidatesRef.current.length > 0) {
+          const candidate = pendingCandidatesRef.current.shift();
+          if (candidate && pcRef.current) {
+            try {
+              await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (e) {
+              console.warn('Error flushing pending caller ICE candidate:', e);
+            }
+          }
+        }
 
         const connTimestamp = connectedAt || Date.now();
         connectedAtRef.current = connTimestamp;
@@ -422,7 +537,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           }, 1000);
         }
-        setActiveCall((prev) => (prev ? { ...prev, status: 'accepted', connectedAt: connTimestamp } : null));
+        setActiveCall((prev) =>
+          prev ? { ...prev, status: 'accepted', connectedAt: connTimestamp } : null
+        );
       };
 
       // Handler when call is terminated or rejected by remote user
@@ -440,7 +557,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           callerId: currentUser.uid,
           callerName: myName,
           callerPhoto: myPhoto,
-          calleeId: callee.uid,
+          calleeId: targetCalleeUid,
           calleeName: callee.displayName || '1 social Member',
           calleePhoto: callee.photoURL,
           type,
@@ -471,7 +588,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       );
 
-      // Parallel RTDB listener for sub-50ms termination
+      // Parallel non-blocking RTDB listener
       try {
         const rtdbCallRef = rtdbRef(rtdb, `calls/${callId}`);
         unsubRtdbCallRef.current = rtdbOnValue(
@@ -486,9 +603,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
               await handleRemoteTerminated(data.status);
             }
           },
-          (error) => {
-            console.warn('RTDB call listener notice:', error?.message || error);
-          }
+          () => {}
         );
       } catch (e) {}
 
@@ -500,11 +615,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           snap.docChanges().forEach(async (change) => {
             if (change.type === 'added') {
               const cData = change.doc.data();
-              if (cData.senderId !== currentUser.uid && cData.candidate && pcRef.current) {
-                try {
-                  await pcRef.current.addIceCandidate(new RTCIceCandidate(cData.candidate));
-                } catch (err) {
-                  console.warn('Error adding received ICE candidate:', err);
+              if (cData.senderId !== currentUser.uid && cData.candidate) {
+                if (!pcRef.current || !pcRef.current.currentRemoteDescription) {
+                  pendingCandidatesRef.current.push(cData.candidate);
+                } else {
+                  try {
+                    await pcRef.current.addIceCandidate(new RTCIceCandidate(cData.candidate));
+                  } catch (err) {
+                    console.warn('Error adding received ICE candidate:', err);
+                  }
                 }
               }
             }
@@ -540,6 +659,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setActiveCall(acceptedCallData);
     activeCallRef.current = acceptedCallData;
     setIncomingCall(null);
+    pendingCandidatesRef.current = [];
 
     // Start duration timer immediately
     setCallDuration(0);
@@ -578,14 +698,18 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setRemoteStream(remote);
 
       pc.ontrack = (event) => {
-        event.streams[0].getTracks().forEach((track) => {
-          remote.addTrack(track);
-        });
+        if (event.streams && event.streams[0]) {
+          event.streams[0].getTracks().forEach((track) => {
+            remote.addTrack(track);
+          });
+        } else if (event.track) {
+          remote.addTrack(event.track);
+        }
       };
 
       const callDocRef = doc(db, 'calls', callToAccept.id);
 
-      // Collect ICE candidates
+      // Collect and push callee local ICE candidates
       pc.onicecandidate = async (event) => {
         if (event.candidate) {
           try {
@@ -602,6 +726,19 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // Set remote offer & generate answer
       await pc.setRemoteDescription(new RTCSessionDescription(callToAccept.offer));
+
+      // Flush any ICE candidates from caller that arrived before remote description
+      while (pendingCandidatesRef.current.length > 0) {
+        const candidate = pendingCandidatesRef.current.shift();
+        if (candidate && pcRef.current) {
+          try {
+            await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+          } catch (e) {
+            console.warn('Error flushing pending callee ICE candidate:', e);
+          }
+        }
+      }
+
       const answerDescription = await pc.createAnswer();
       await pc.setLocalDescription(answerDescription);
 
@@ -617,9 +754,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
 
       // Update RTDB non-blockingly
-      try {
+      safeRtdbOp(() => {
         const rtdbCallRef = rtdbRef(rtdb, `calls/${callToAccept.id}`);
-        await rtdbUpdate(rtdbCallRef, {
+        return rtdbUpdate(rtdbCallRef, {
           answer: {
             type: answerDescription.type,
             sdp: answerDescription.sdp,
@@ -627,13 +764,13 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           status: 'accepted',
           connectedAt: connectedNow,
         });
-        await rtdbRemove(rtdbRef(rtdb, `userCalls/${currentUser.uid}/${callToAccept.id}`));
-        await rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callToAccept.id}/status`)).set('ended');
-      } catch (e) {}
+      });
+      safeRtdbOp(() => rtdbRemove(rtdbRef(rtdb, `userCalls/${currentUser.uid}/${callToAccept.id}`)));
+      safeRtdbOp(() => rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callToAccept.id}/status`)).set('ended'));
 
       soundEffects.playCallConnected();
 
-      // Termination listener
+      // Call termination handler
       const handleCallEnded = async () => {
         if (isCleaningUpRef.current) return;
         isCleaningUpRef.current = true;
@@ -661,7 +798,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         cleanupMedia();
       };
 
-      // Listen via Firestore
+      // Listen via Firestore for end/reject from caller
       unsubCallRef.current = onSnapshot(
         callDocRef,
         async (snap) => {
@@ -675,7 +812,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       );
 
-      // Parallel RTDB listener
+      // Parallel non-blocking RTDB listener
       try {
         const rtdbCallRef = rtdbRef(rtdb, `calls/${callToAccept.id}`);
         unsubRtdbCallRef.current = rtdbOnValue(
@@ -686,9 +823,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
               await handleCallEnded();
             }
           },
-          (error) => {
-            console.warn('RTDB termination listener notice:', error?.message || error);
-          }
+          () => {}
         );
       } catch (e) {}
 
@@ -700,11 +835,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           snap.docChanges().forEach(async (change) => {
             if (change.type === 'added') {
               const cData = change.doc.data();
-              if (cData.senderId !== currentUser.uid && cData.candidate && pcRef.current) {
-                try {
-                  await pcRef.current.addIceCandidate(new RTCIceCandidate(cData.candidate));
-                } catch (e) {
-                  console.warn('Error adding caller ICE candidate:', e);
+              if (cData.senderId !== currentUser.uid && cData.candidate) {
+                if (!pcRef.current || !pcRef.current.currentRemoteDescription) {
+                  pendingCandidatesRef.current.push(cData.candidate);
+                } else {
+                  try {
+                    await pcRef.current.addIceCandidate(new RTCIceCandidate(cData.candidate));
+                  } catch (e) {
+                    console.warn('Error adding caller ICE candidate:', e);
+                  }
                 }
               }
             }
@@ -737,13 +876,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
 
         // Update RTDB non-blockingly
-        try {
-          await rtdbUpdate(rtdbRef(rtdb, `calls/${callToReject.id}`), {
+        safeRtdbOp(() =>
+          rtdbUpdate(rtdbRef(rtdb, `calls/${callToReject.id}`), {
             status: 'rejected',
             endedAt: Date.now(),
-          });
-          await rtdbRemove(rtdbRef(rtdb, `userCalls/${currentUser?.uid}/${callToReject.id}`));
-        } catch (e) {}
+          })
+        );
+        safeRtdbOp(() =>
+          rtdbRemove(rtdbRef(rtdb, `userCalls/${currentUser?.uid}/${callToReject.id}`))
+        );
 
         await recordCallHistory({
           callId: callToReject.id,
@@ -789,17 +930,17 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       // 2. Update RTDB non-blockingly
-      try {
-        await rtdbUpdate(rtdbRef(rtdb, `calls/${curCall.id}`), {
+      safeRtdbOp(() =>
+        rtdbUpdate(rtdbRef(rtdb, `calls/${curCall.id}`), {
           status: 'ended',
           duration: finalDuration,
           endedBy: currentUser?.uid || '',
           endedAt: Date.now(),
-        });
-        await rtdbRemove(rtdbRef(rtdb, `userCalls/${curCall.calleeId}/${curCall.id}`));
-      } catch (rtdbErr) {
-        console.warn('RTDB end call notice:', rtdbErr);
-      }
+        })
+      );
+      safeRtdbOp(() =>
+        rtdbRemove(rtdbRef(rtdb, `userCalls/${curCall.calleeId}/${curCall.id}`))
+      );
 
       // 3. Record call history
       await recordCallHistory({

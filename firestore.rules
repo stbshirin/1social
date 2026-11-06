@@ -121,9 +121,14 @@ service cloud.firestore {
 
     // WebRTC Calls Collection
     match /calls/{callId} {
-      allow read: if isSignedIn() && (
+      allow get: if isSignedIn() && (
         request.auth.uid == resource.data.callerId ||
         request.auth.uid == resource.data.calleeId ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.callerId == request.auth.uid ||
+        resource.data.calleeId == request.auth.uid ||
         isAdmin()
       );
       allow create: if isSignedIn() && incoming().callerId == request.auth.uid;

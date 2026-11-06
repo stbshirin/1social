@@ -409,8 +409,8 @@ export const CallModal: React.FC = () => {
               {callDurationFormatted}
             </p>
 
-            {/* Hidden video element to play remote audio stream */}
-            <video ref={remoteVideoRef} autoPlay playsInline className="hidden" />
+            {/* Video element to play remote audio stream without display:none suspension */}
+            <video ref={remoteVideoRef} autoPlay playsInline className="w-0 h-0 opacity-0 pointer-events-none absolute" />
           </div>
         )}
       </div>

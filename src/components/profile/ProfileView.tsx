@@ -190,7 +190,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         if (!isMounted) return;
 
         if (snap.exists()) {
-          const data = { id: snap.id, ...snap.data() } as UserProfile;
+          const snapData = snap.data();
+          const data = { id: snap.id, uid: snapData.uid || snap.id, ...snapData } as UserProfile;
           setProfile(data);
           setProfileNotFound(false);
           setLoadingProfile(false);
