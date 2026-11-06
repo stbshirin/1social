@@ -185,7 +185,7 @@ const ExploreUserCard: React.FC<ExploreUserCardProps> = ({
             />
             {/* Dynamic Presence Dot */}
             <span
-              title={presence.isOnline ? 'Online' : presence.lastSeenText}
+              title={presence.isOnline ? 'Online now' : presence.lastSeenText}
               className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white dark:border-slate-900 ${
                 presence.isOnline ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-600'
               }`}

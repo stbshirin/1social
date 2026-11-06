@@ -34,19 +34,3 @@ export async function getMediaStream(type: 'audio' | 'video', facingMode: 'user'
     throw err;
   }
 }
-
-export function stopMediaStream(stream: MediaStream | null | undefined): void {
-  if (!stream) return;
-  try {
-    stream.getTracks().forEach((track) => {
-      try {
-        track.stop();
-        track.enabled = false;
-      } catch (e) {
-        console.warn('Error stopping track:', e);
-      }
-    });
-  } catch (err) {
-    console.warn('Error stopping media stream:', err);
-  }
-}

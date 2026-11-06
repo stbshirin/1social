@@ -98,11 +98,9 @@ export interface CallSession {
   id: string;
   callerId: string;
   callerName: string;
-  callerUsername?: string;
   callerPhoto?: string;
   calleeId: string;
   calleeName: string;
-  calleeUsername?: string;
   calleePhoto?: string;
   type: 'audio' | 'video';
   status: 'offering' | 'ringing' | 'accepted' | 'rejected' | 'ended' | 'missed';
