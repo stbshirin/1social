@@ -17,7 +17,6 @@ import {
   remove as rtdbRemove,
   onValue as rtdbOnValue,
   onDisconnect as rtdbOnDisconnect,
-  serverTimestamp as rtdbServerTimestamp,
 } from 'firebase/database';
 import { db, rtdb } from '../firebase/config';
 import { useAuth } from './AuthContext';
@@ -34,6 +33,8 @@ interface CallContextType {
   isMuted: boolean;
   isVideoOff: boolean;
   isScreenSharing: boolean;
+  isSpeakerOn: boolean;
+  toggleSpeaker: () => void;
   callDuration: number;
   callDurationFormatted: string;
   initiateCall: (callee: UserProfile, type: 'audio' | 'video') => Promise<void>;
@@ -59,6 +60,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isSpeakerOn, setIsSpeakerOn] = useState(true);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [callDuration, setCallDuration] = useState(0);
 
@@ -132,7 +134,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     remoteStreamRef.current = null;
     setRemoteStream(null);
 
-    // Close WebRTC Peer Connection
+    // Close WebRTC Peer Connection and stop senders
     if (pcRef.current) {
       try {
         pcRef.current.getSenders().forEach((sender) => {
@@ -208,39 +210,11 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [currentUser?.uid]);
 
-  // Dual-listener for incoming calls: RTDB userCalls (instant <50ms) + Firestore fallback
+  // Reliable incoming calls listener using Firestore primary + RTDB non-blocking accelerator
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser?.uid) return;
 
-    // 1. RTDB incoming calls listener
-    const userCallsNode = rtdbRef(rtdb, `userCalls/${currentUser.uid}`);
-    const unsubRtdb = rtdbOnValue(
-      userCallsNode,
-      (snapshot) => {
-        const data = snapshot.val();
-        if (data && typeof data === 'object') {
-          const callList = Object.values(data) as CallSession[];
-          const incoming = callList.find((c) => c.status === 'ringing' || c.status === 'offering');
-
-          if (incoming && !activeCallRef.current) {
-            setIncomingCall(incoming);
-            soundEffects.startIncomingRingtone();
-            return;
-          }
-        }
-
-        // If no active incoming call in RTDB, silence ringtone if not in active call
-        if (!activeCallRef.current && incomingCall) {
-          soundEffects.stopRingtone();
-          setIncomingCall(null);
-        }
-      },
-      (error) => {
-        console.warn('RTDB userCalls listener notice:', error?.message || error);
-      }
-    );
-
-    // 2. Firestore incoming calls query fallback
+    // 1. Authoritative Firestore incoming calls listener
     const q = query(
       collection(db, 'calls'),
       where('calleeId', '==', currentUser.uid),
@@ -253,13 +227,23 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (!snapshot.empty) {
           const callDoc = snapshot.docs[0];
           const data = { id: callDoc.id, ...callDoc.data() } as CallSession;
-          if (!activeCallRef.current && !incomingCall) {
-            setIncomingCall(data);
-            soundEffects.startIncomingRingtone();
+          // Only show incoming if we're not currently on an active call
+          if (!activeCallRef.current) {
+            setIncomingCall((prev) => {
+              if (prev?.id === data.id) return prev;
+              soundEffects.startIncomingRingtone();
+              return data;
+            });
           }
-        } else if (!activeCallRef.current && incomingCall) {
-          soundEffects.stopRingtone();
-          setIncomingCall(null);
+        } else {
+          // If no ringing calls for this user in Firestore, dismiss incoming screen and stop ringtone
+          setIncomingCall((prev) => {
+            if (prev) {
+              soundEffects.stopRingtone();
+              return null;
+            }
+            return null;
+          });
         }
       },
       (error) => {
@@ -267,11 +251,37 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     );
 
+    // 2. Non-blocking RTDB incoming accelerator
+    let unsubRtdb: (() => void) | null = null;
+    try {
+      const userCallsNode = rtdbRef(rtdb, `userCalls/${currentUser.uid}`);
+      unsubRtdb = rtdbOnValue(
+        userCallsNode,
+        (snapshot) => {
+          const data = snapshot.val();
+          if (data && typeof data === 'object') {
+            const callList = Object.values(data) as CallSession[];
+            const incoming = callList.find((c) => c.status === 'ringing' || c.status === 'offering');
+            if (incoming && !activeCallRef.current) {
+              setIncomingCall((prev) => {
+                if (prev?.id === incoming.id) return prev;
+                soundEffects.startIncomingRingtone();
+                return incoming;
+              });
+            }
+          }
+        },
+        (error) => {
+          console.warn('RTDB incoming call notice (using Firestore):', error?.message || error);
+        }
+      );
+    } catch (e) {}
+
     return () => {
-      unsubRtdb();
       unsubFirestore();
+      if (unsubRtdb) unsubRtdb();
     };
-  }, [currentUser?.uid, incomingCall]);
+  }, [currentUser?.uid]);
 
   // Initiate an outgoing Audio or Video Call
   const initiateCall = async (callee: UserProfile, type: 'audio' | 'video') => {
@@ -328,9 +338,11 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         id: callId,
         callerId: currentUser.uid,
         callerName: userProfile.displayName,
+        callerUsername: userProfile.username,
         callerPhoto: userProfile.photoURL,
         calleeId: callee.uid,
         calleeName: callee.displayName,
+        calleeUsername: callee.username,
         calleePhoto: callee.photoURL,
         type,
         status: 'ringing',
@@ -341,97 +353,121 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         createdAt: new Date().toISOString(),
       };
 
-      // 1. Dual-write to Realtime Database for sub-50ms signaling and server-side onDisconnect
-      const rtdbCallRef = rtdbRef(rtdb, `calls/${callId}`);
-      const rtdbCalleeCallRef = rtdbRef(rtdb, `userCalls/${callee.uid}/${callId}`);
+      // Set active call immediately on caller's screen to display Outgoing Call Screen!
+      setActiveCall(newCallData);
+      activeCallRef.current = newCallData;
 
-      await Promise.all([
-        rtdbSet(rtdbCallRef, {
-          ...newCallData,
-          createdAt: Date.now(),
-        }),
-        rtdbSet(rtdbCalleeCallRef, {
-          ...newCallData,
-          createdAt: Date.now(),
-        }),
-      ]);
-
-      // Server-side onDisconnect ensures that if caller closes browser/loses net, callee terminates immediately
-      try {
-        await rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callId}/status`)).set('ended');
-        await rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callId}/endedBy`)).set(currentUser.uid);
-        await rtdbOnDisconnect(rtdbCalleeCallRef).remove();
-      } catch (disconnectErr) {
-        console.warn('onDisconnect registration notice:', disconnectErr);
-      }
-
-      // 2. Write to Firestore as persistent record
+      // 1. Primary write to Firestore calls collection
       await setDoc(callDocRef, {
         ...newCallData,
         createdAt: serverTimestamp(),
       });
 
-      setActiveCall(newCallData);
-      activeCallRef.current = newCallData;
+      // 2. Secondary non-blocking write to Realtime Database
+      try {
+        const rtdbCallRef = rtdbRef(rtdb, `calls/${callId}`);
+        const rtdbCalleeCallRef = rtdbRef(rtdb, `userCalls/${callee.uid}/${callId}`);
 
-      // Realtime listener for remote answer and instant disconnect synchronization via RTDB
-      unsubRtdbCallRef.current = rtdbOnValue(
-        rtdbCallRef,
+        await Promise.all([
+          rtdbSet(rtdbCallRef, { ...newCallData, createdAt: Date.now() }),
+          rtdbSet(rtdbCalleeCallRef, { ...newCallData, createdAt: Date.now() }),
+        ]);
+
+        rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callId}/status`)).set('ended').catch(() => {});
+        rtdbOnDisconnect(rtdbCalleeCallRef).remove().catch(() => {});
+      } catch (rtdbErr) {
+        console.warn('RTDB non-blocking write notice:', rtdbErr);
+      }
+
+      // Handler when call is accepted by remote user
+      const handleRemoteAccepted = async (answer: any, connectedAt?: number) => {
+        if (!pcRef.current || pcRef.current.currentRemoteDescription) return;
+
+        soundEffects.playCallConnected();
+        const answerDescription = new RTCSessionDescription(answer);
+        await pcRef.current.setRemoteDescription(answerDescription);
+
+        const connTimestamp = connectedAt || Date.now();
+        connectedAtRef.current = connTimestamp;
+        setCallDuration(0);
+
+        if (!timerRef.current) {
+          timerRef.current = setInterval(() => {
+            if (connectedAtRef.current) {
+              const elapsed = Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000));
+              setCallDuration(elapsed);
+            }
+          }, 1000);
+        }
+        setActiveCall((prev) => (prev ? { ...prev, status: 'accepted', connectedAt: connTimestamp } : null));
+      };
+
+      // Handler when call is terminated or rejected by remote user
+      const handleRemoteTerminated = async (status: 'rejected' | 'ended') => {
+        if (isCleaningUpRef.current) return;
+        isCleaningUpRef.current = true;
+
+        soundEffects.playCallEnded();
+        const finalDuration = connectedAtRef.current
+          ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
+          : 0;
+
+        await recordCallHistory({
+          callId,
+          callerId: currentUser.uid,
+          callerName: userProfile.displayName,
+          callerPhoto: userProfile.photoURL,
+          calleeId: callee.uid,
+          calleeName: callee.displayName,
+          calleePhoto: callee.photoURL,
+          type,
+          status,
+          duration: finalDuration,
+          connectedAt: connectedAtRef.current,
+          endedAt: Date.now(),
+        }).catch(() => {});
+
+        cleanupMedia();
+      };
+
+      // 1. Primary listener via Firestore
+      unsubCallRef.current = onSnapshot(
+        callDocRef,
         async (snapshot) => {
-          const data = snapshot.val();
+          const data = snapshot.data();
           if (!data) return;
 
-          // Remote answered call
-          if (data.status === 'accepted' && data.answer && !pc.currentRemoteDescription) {
-            soundEffects.playCallConnected();
-            const answerDescription = new RTCSessionDescription(data.answer);
-            await pc.setRemoteDescription(answerDescription);
-
-            const connTimestamp = data.connectedAt || Date.now();
-            connectedAtRef.current = connTimestamp;
-            setCallDuration(0);
-
-            if (!timerRef.current) {
-              timerRef.current = setInterval(() => {
-                if (connectedAtRef.current) {
-                  const elapsed = Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000));
-                  setCallDuration(elapsed);
-                }
-              }, 1000);
-            }
-            setActiveCall((prev) => (prev ? { ...prev, status: 'accepted', connectedAt: connTimestamp } : null));
+          if (data.status === 'accepted' && data.answer) {
+            await handleRemoteAccepted(data.answer, data.connectedAt);
           } else if (data.status === 'rejected' || data.status === 'ended') {
-            // Immediate real-time remote disconnect!
-            if (isCleaningUpRef.current) return;
-            isCleaningUpRef.current = true;
-
-            soundEffects.playCallEnded();
-            const finalDuration = connectedAtRef.current
-              ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
-              : 0;
-
-            await recordCallHistory({
-              callId,
-              callerId: currentUser.uid,
-              callerName: userProfile.displayName,
-              callerPhoto: userProfile.photoURL,
-              calleeId: callee.uid,
-              calleeName: callee.displayName,
-              calleePhoto: callee.photoURL,
-              type,
-              status: data.status,
-              duration: finalDuration,
-              connectedAt: connectedAtRef.current,
-              endedAt: Date.now(),
-            }).catch(() => {});
-
-            cleanupMedia();
+            await handleRemoteTerminated(data.status);
           }
         },
         (error) => {
-          console.warn('RTDB call signaling listener notice:', error?.message || error);
+          console.warn('Firestore callDoc listener notice:', error?.message || error);
         }
       );
+
+      // 2. Parallel RTDB listener for sub-50ms termination
+      try {
+        const rtdbCallRef = rtdbRef(rtdb, `calls/${callId}`);
+        unsubRtdbCallRef.current = rtdbOnValue(
+          rtdbCallRef,
+          async (snapshot) => {
+            const data = snapshot.val();
+            if (!data) return;
+
+            if (data.status === 'accepted' && data.answer) {
+              await handleRemoteAccepted(data.answer, data.connectedAt);
+            } else if (data.status === 'rejected' || data.status === 'ended') {
+              await handleRemoteTerminated(data.status);
+            }
+          },
+          (error) => {
+            console.warn('RTDB call listener notice:', error?.message || error);
+          }
+        );
+      } catch (e) {}
 
       // Listen for remote ICE candidates from callee via Firestore
       const candidatesCol = collection(db, 'calls', callId, 'candidates');
@@ -515,29 +551,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const connectedNow = Date.now();
       connectedAtRef.current = connectedNow;
 
-      // Update RTDB for instant connection
-      const rtdbCallRef = rtdbRef(rtdb, `calls/${callToAccept.id}`);
-      await rtdbUpdate(rtdbCallRef, {
-        answer: {
-          type: answerDescription.type,
-          sdp: answerDescription.sdp,
-        },
-        status: 'accepted',
-        connectedAt: connectedNow,
-      });
-
-      // Remove from userCalls
-      await rtdbRemove(rtdbRef(rtdb, `userCalls/${currentUser.uid}/${callToAccept.id}`)).catch(() => {});
-
-      // Server-side onDisconnect: if callee disconnects abruptly, mark call ended in RTDB
-      try {
-        await rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callToAccept.id}/status`)).set('ended');
-        await rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callToAccept.id}/endedBy`)).set(currentUser.uid);
-      } catch (disconnectErr) {
-        console.warn('onDisconnect registration notice:', disconnectErr);
-      }
-
-      // Update Firestore
+      // Update Firestore with answer and accepted status
       await updateDoc(callDocRef, {
         answer: {
           type: answerDescription.type,
@@ -547,6 +561,21 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         connectedAt: connectedNow,
         acceptedAt: serverTimestamp(),
       });
+
+      // Update RTDB non-blockingly
+      try {
+        const rtdbCallRef = rtdbRef(rtdb, `calls/${callToAccept.id}`);
+        await rtdbUpdate(rtdbCallRef, {
+          answer: {
+            type: answerDescription.type,
+            sdp: answerDescription.sdp,
+          },
+          status: 'accepted',
+          connectedAt: connectedNow,
+        });
+        await rtdbRemove(rtdbRef(rtdb, `userCalls/${currentUser.uid}/${callToAccept.id}`));
+        await rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callToAccept.id}/status`)).set('ended');
+      } catch (e) {}
 
       soundEffects.playCallConnected();
       const updatedAcceptedCall: CallSession = {
@@ -566,42 +595,64 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }, 1000);
 
-      // Listen for instantaneous call termination via RTDB
-      unsubRtdbCallRef.current = rtdbOnValue(
-        rtdbCallRef,
+      // Termination listener
+      const handleCallEnded = async () => {
+        if (isCleaningUpRef.current) return;
+        isCleaningUpRef.current = true;
+
+        soundEffects.playCallEnded();
+        const finalDuration = connectedAtRef.current
+          ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
+          : 0;
+
+        await recordCallHistory({
+          callId: callToAccept.id,
+          callerId: callToAccept.callerId,
+          callerName: callToAccept.callerName,
+          callerPhoto: callToAccept.callerPhoto,
+          calleeId: callToAccept.calleeId,
+          calleeName: callToAccept.calleeName,
+          calleePhoto: callToAccept.calleePhoto,
+          type: callToAccept.type,
+          status: 'ended',
+          duration: finalDuration,
+          connectedAt: connectedAtRef.current,
+          endedAt: Date.now(),
+        }).catch(() => {});
+
+        cleanupMedia();
+      };
+
+      // 1. Primary listener via Firestore
+      unsubCallRef.current = onSnapshot(
+        callDocRef,
         async (snap) => {
-          const data = snap.val();
+          const data = snap.data();
           if (data && (data.status === 'ended' || data.status === 'rejected')) {
-            if (isCleaningUpRef.current) return;
-            isCleaningUpRef.current = true;
-
-            soundEffects.playCallEnded();
-            const finalDuration = connectedAtRef.current
-              ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
-              : 0;
-
-            await recordCallHistory({
-              callId: callToAccept.id,
-              callerId: callToAccept.callerId,
-              callerName: callToAccept.callerName,
-              callerPhoto: callToAccept.callerPhoto,
-              calleeId: callToAccept.calleeId,
-              calleeName: callToAccept.calleeName,
-              calleePhoto: callToAccept.calleePhoto,
-              type: callToAccept.type,
-              status: data.status,
-              duration: finalDuration,
-              connectedAt: connectedAtRef.current,
-              endedAt: Date.now(),
-            }).catch(() => {});
-
-            cleanupMedia();
+            await handleCallEnded();
           }
         },
         (error) => {
-          console.warn('RTDB termination listener notice:', error?.message || error);
+          console.warn('Firestore call termination listener notice:', error?.message || error);
         }
       );
+
+      // 2. Parallel RTDB listener
+      try {
+        const rtdbCallRef = rtdbRef(rtdb, `calls/${callToAccept.id}`);
+        unsubRtdbCallRef.current = rtdbOnValue(
+          rtdbCallRef,
+          async (snap) => {
+            const data = snap.val();
+            if (data && (data.status === 'ended' || data.status === 'rejected')) {
+              await handleCallEnded();
+            }
+          },
+          (error) => {
+            console.warn('RTDB termination listener notice:', error?.message || error);
+          }
+        );
+      } catch (e) {}
 
       // Listen for caller's ICE candidates via Firestore
       const candidatesCol = collection(db, 'calls', callToAccept.id, 'candidates');
@@ -637,21 +688,24 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     soundEffects.stopRingtone();
     if (incomingCall) {
       const callToReject = incomingCall;
+      setIncomingCall(null);
+
       try {
-        // Update RTDB status to rejected and remove from userCalls
-        await rtdbUpdate(rtdbRef(rtdb, `calls/${callToReject.id}`), {
-          status: 'rejected',
-          endedAt: Date.now(),
-        }).catch(() => {});
-
-        await rtdbRemove(rtdbRef(rtdb, `userCalls/${currentUser?.uid}/${callToReject.id}`)).catch(() => {});
-
         // Update Firestore status
         const callDocRef = doc(db, 'calls', callToReject.id);
         await updateDoc(callDocRef, {
           status: 'rejected',
           endedAt: serverTimestamp(),
         });
+
+        // Update RTDB non-blockingly
+        try {
+          await rtdbUpdate(rtdbRef(rtdb, `calls/${callToReject.id}`), {
+            status: 'rejected',
+            endedAt: Date.now(),
+          });
+          await rtdbRemove(rtdbRef(rtdb, `userCalls/${currentUser?.uid}/${callToReject.id}`));
+        } catch (e) {}
 
         await recordCallHistory({
           callId: callToReject.id,
@@ -671,10 +725,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.warn('Error updating call rejection:', err);
       }
     }
-    setIncomingCall(null);
   };
 
-  // End active call (caller or callee clicks "End Call")
+  // End active call (caller cancels, or either user hangs up)
   const endCall = async () => {
     soundEffects.playCallEnded();
     const curCall = activeCallRef.current || activeCall;
@@ -685,20 +738,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (curCall) {
       isCleaningUpRef.current = true;
 
-      // 1. Immediately update RTDB to trigger instant disconnect on remote device
-      try {
-        await rtdbUpdate(rtdbRef(rtdb, `calls/${curCall.id}`), {
-          status: 'ended',
-          duration: finalDuration,
-          endedBy: currentUser?.uid || '',
-          endedAt: Date.now(),
-        });
-        await rtdbRemove(rtdbRef(rtdb, `userCalls/${curCall.calleeId}/${curCall.id}`)).catch(() => {});
-      } catch (rtdbErr) {
-        console.warn('RTDB end call notice:', rtdbErr);
-      }
-
-      // 2. Update Firestore
+      // 1. Update Firestore
       try {
         const callDocRef = doc(db, 'calls', curCall.id);
         await updateDoc(callDocRef, {
@@ -710,7 +750,20 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.warn('Error updating ended call in Firestore:', err);
       }
 
-      // 3. Record call history with exact duration
+      // 2. Update RTDB non-blockingly
+      try {
+        await rtdbUpdate(rtdbRef(rtdb, `calls/${curCall.id}`), {
+          status: 'ended',
+          duration: finalDuration,
+          endedBy: currentUser?.uid || '',
+          endedAt: Date.now(),
+        });
+        await rtdbRemove(rtdbRef(rtdb, `userCalls/${curCall.calleeId}/${curCall.id}`));
+      } catch (rtdbErr) {
+        console.warn('RTDB end call notice:', rtdbErr);
+      }
+
+      // 3. Record call history
       await recordCallHistory({
         callId: curCall.id,
         callerId: curCall.callerId,
@@ -753,6 +806,11 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setIsVideoOff(!videoTrack.enabled);
       }
     }
+  };
+
+  // Toggle Speaker / Output Audio
+  const toggleSpeaker = () => {
+    setIsSpeakerOn((prev) => !prev);
   };
 
   // Switch Camera (Mobile front / rear)
@@ -835,6 +893,8 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isMuted,
         isVideoOff,
         isScreenSharing,
+        isSpeakerOn,
+        toggleSpeaker,
         callDuration,
         callDurationFormatted: formatCallDuration(callDuration),
         initiateCall,
