@@ -210,7 +210,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [currentUser?.uid]);
 
-  // Reliable incoming calls listener using Firestore primary + RTDB non-blocking accelerator
+  // Reliable incoming calls listener using Firestore primary + RTDB accelerator
   useEffect(() => {
     if (!currentUser?.uid) return;
 
@@ -218,7 +218,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const q = query(
       collection(db, 'calls'),
       where('calleeId', '==', currentUser.uid),
-      where('status', 'in', ['offering', 'ringing'])
+      where('status', '==', 'ringing')
     );
 
     const unsubFirestore = onSnapshot(
@@ -228,7 +228,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const callDoc = snapshot.docs[0];
           const data = { id: callDoc.id, ...callDoc.data() } as CallSession;
           // Only show incoming if we're not currently on an active call
-          if (!activeCallRef.current) {
+          if (!activeCallRef.current || activeCallRef.current.status !== 'accepted') {
             setIncomingCall((prev) => {
               if (prev?.id === data.id) return prev;
               soundEffects.startIncomingRingtone();
@@ -240,7 +240,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setIncomingCall((prev) => {
             if (prev) {
               soundEffects.stopRingtone();
-              return null;
             }
             return null;
           });
@@ -262,7 +261,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (data && typeof data === 'object') {
             const callList = Object.values(data) as CallSession[];
             const incoming = callList.find((c) => c.status === 'ringing' || c.status === 'offering');
-            if (incoming && !activeCallRef.current) {
+            if (incoming && (!activeCallRef.current || activeCallRef.current.status !== 'accepted')) {
               setIncomingCall((prev) => {
                 if (prev?.id === incoming.id) return prev;
                 soundEffects.startIncomingRingtone();
@@ -285,23 +284,61 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Initiate an outgoing Audio or Video Call
   const initiateCall = async (callee: UserProfile, type: 'audio' | 'video') => {
-    if (!currentUser || !userProfile) return;
+    if (!currentUser) return;
+
+    const myName = userProfile?.displayName || currentUser.displayName || currentUser.email?.split('@')[0] || 'User';
+    const myUsername = userProfile?.username || currentUser.email?.split('@')[0] || `user_${currentUser.uid.slice(0, 5)}`;
+    const myPhoto = userProfile?.photoURL || currentUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${currentUser.uid}`;
+
+    const callDocRef = doc(collection(db, 'calls'));
+    const callId = callDocRef.id;
+
+    // STEP 1: IMMEDIATELY SHOW OUTGOING CALL SCREEN (0ms latency!)
+    cleanupMedia();
+    soundEffects.startOutgoingRingtone();
+
+    const initialCallData: CallSession = {
+      id: callId,
+      callerId: currentUser.uid,
+      callerName: myName,
+      callerUsername: myUsername,
+      callerPhoto: myPhoto,
+      calleeId: callee.uid,
+      calleeName: callee.displayName || '1 social Member',
+      calleeUsername: callee.username || 'user',
+      calleePhoto: callee.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${callee.uid}`,
+      type,
+      status: 'ringing',
+      createdAt: new Date().toISOString(),
+    };
+
+    setActiveCall(initialCallData);
+    activeCallRef.current = initialCallData;
 
     try {
-      cleanupMedia();
-      soundEffects.startOutgoingRingtone();
+      // STEP 2: Acquire Media Stream with Graceful Fallback
+      let stream: MediaStream;
+      try {
+        stream = await getMediaStream(type, facingMode);
+      } catch (mediaErr: any) {
+        console.warn('getUserMedia error, falling back to audio:', mediaErr);
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        } catch {
+          // If no media device is available, create empty stream so WebRTC signaling continues
+          stream = new MediaStream();
+        }
+      }
 
-      const stream = await getMediaStream(type, facingMode);
       localStreamRef.current = stream;
       setLocalStream(stream);
 
+      // STEP 3: Setup RTCPeerConnection
       const pc = new RTCPeerConnection(ICE_SERVERS);
       pcRef.current = pc;
 
-      // Add local audio and video tracks to WebRTC peer connection
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-      // Handle receiving remote tracks
       const remote = new MediaStream();
       remoteStreamRef.current = remote;
       setRemoteStream(remote);
@@ -312,10 +349,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
       };
 
-      const callDocRef = doc(collection(db, 'calls'));
-      const callId = callDocRef.id;
-
-      // Send local ICE candidates to Firestore
+      // Collect ICE candidates
       pc.onicecandidate = async (event) => {
         if (event.candidate) {
           try {
@@ -334,43 +368,32 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const offerDescription = await pc.createOffer();
       await pc.setLocalDescription(offerDescription);
 
-      const newCallData: CallSession = {
-        id: callId,
-        callerId: currentUser.uid,
-        callerName: userProfile.displayName,
-        callerUsername: userProfile.username,
-        callerPhoto: userProfile.photoURL,
-        calleeId: callee.uid,
-        calleeName: callee.displayName,
-        calleeUsername: callee.username,
-        calleePhoto: callee.photoURL,
-        type,
-        status: 'ringing',
+      const fullCallData: CallSession = {
+        ...initialCallData,
         offer: {
           type: offerDescription.type,
           sdp: offerDescription.sdp,
         },
-        createdAt: new Date().toISOString(),
       };
 
-      // Set active call immediately on caller's screen to display Outgoing Call Screen!
-      setActiveCall(newCallData);
-      activeCallRef.current = newCallData;
+      // Update local state with offer
+      setActiveCall(fullCallData);
+      activeCallRef.current = fullCallData;
 
-      // 1. Primary write to Firestore calls collection
+      // STEP 4: Write Offer to Firestore calls collection
       await setDoc(callDocRef, {
-        ...newCallData,
+        ...fullCallData,
         createdAt: serverTimestamp(),
       });
 
-      // 2. Secondary non-blocking write to Realtime Database
+      // Secondary non-blocking write to Realtime Database
       try {
         const rtdbCallRef = rtdbRef(rtdb, `calls/${callId}`);
         const rtdbCalleeCallRef = rtdbRef(rtdb, `userCalls/${callee.uid}/${callId}`);
 
         await Promise.all([
-          rtdbSet(rtdbCallRef, { ...newCallData, createdAt: Date.now() }),
-          rtdbSet(rtdbCalleeCallRef, { ...newCallData, createdAt: Date.now() }),
+          rtdbSet(rtdbCallRef, { ...fullCallData, createdAt: Date.now() }),
+          rtdbSet(rtdbCalleeCallRef, { ...fullCallData, createdAt: Date.now() }),
         ]);
 
         rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callId}/status`)).set('ended').catch(() => {});
@@ -415,10 +438,10 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await recordCallHistory({
           callId,
           callerId: currentUser.uid,
-          callerName: userProfile.displayName,
-          callerPhoto: userProfile.photoURL,
+          callerName: myName,
+          callerPhoto: myPhoto,
           calleeId: callee.uid,
-          calleeName: callee.displayName,
+          calleeName: callee.displayName || '1 social Member',
           calleePhoto: callee.photoURL,
           type,
           status,
@@ -430,7 +453,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         cleanupMedia();
       };
 
-      // 1. Primary listener via Firestore
+      // Listen for remote answer / termination via Firestore
       unsubCallRef.current = onSnapshot(
         callDocRef,
         async (snapshot) => {
@@ -448,7 +471,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       );
 
-      // 2. Parallel RTDB listener for sub-50ms termination
+      // Parallel RTDB listener for sub-50ms termination
       try {
         const rtdbCallRef = rtdbRef(rtdb, `calls/${callId}`);
         unsubRtdbCallRef.current = rtdbOnValue(
@@ -500,17 +523,51 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Accept incoming call
   const acceptCall = async () => {
-    if (!incomingCall || !currentUser || !userProfile) return;
+    if (!incomingCall || !currentUser) return;
 
     soundEffects.stopRingtone();
     const callToAccept = incomingCall;
+
+    // STEP 1: IMMEDIATELY TRANSITION TO CONNECTED ACTIVE CALL SCREEN (0ms latency!)
+    const connectedNow = Date.now();
+    connectedAtRef.current = connectedNow;
+
+    const acceptedCallData: CallSession = {
+      ...callToAccept,
+      status: 'accepted',
+      connectedAt: connectedNow,
+    };
+    setActiveCall(acceptedCallData);
+    activeCallRef.current = acceptedCallData;
     setIncomingCall(null);
 
+    // Start duration timer immediately
+    setCallDuration(0);
+    timerRef.current = setInterval(() => {
+      if (connectedAtRef.current) {
+        const elapsed = Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000));
+        setCallDuration(elapsed);
+      }
+    }, 1000);
+
     try {
-      const stream = await getMediaStream(callToAccept.type, facingMode);
+      // STEP 2: Acquire Media Stream with Fallback
+      let stream: MediaStream;
+      try {
+        stream = await getMediaStream(callToAccept.type, facingMode);
+      } catch (mediaErr: any) {
+        console.warn('getUserMedia error in acceptCall:', mediaErr);
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        } catch {
+          stream = new MediaStream();
+        }
+      }
+
       localStreamRef.current = stream;
       setLocalStream(stream);
 
+      // STEP 3: Setup RTCPeerConnection & Answer
       const pc = new RTCPeerConnection(ICE_SERVERS);
       pcRef.current = pc;
 
@@ -548,10 +605,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const answerDescription = await pc.createAnswer();
       await pc.setLocalDescription(answerDescription);
 
-      const connectedNow = Date.now();
-      connectedAtRef.current = connectedNow;
-
-      // Update Firestore with answer and accepted status
+      // STEP 4: Update Firestore with answer and accepted status
       await updateDoc(callDocRef, {
         answer: {
           type: answerDescription.type,
@@ -578,22 +632,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } catch (e) {}
 
       soundEffects.playCallConnected();
-      const updatedAcceptedCall: CallSession = {
-        ...callToAccept,
-        status: 'accepted',
-        connectedAt: connectedNow,
-      };
-      setActiveCall(updatedAcceptedCall);
-      activeCallRef.current = updatedAcceptedCall;
-
-      // Start duration timer
-      setCallDuration(0);
-      timerRef.current = setInterval(() => {
-        if (connectedAtRef.current) {
-          const elapsed = Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000));
-          setCallDuration(elapsed);
-        }
-      }, 1000);
 
       // Termination listener
       const handleCallEnded = async () => {
@@ -623,7 +661,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         cleanupMedia();
       };
 
-      // 1. Primary listener via Firestore
+      // Listen via Firestore
       unsubCallRef.current = onSnapshot(
         callDocRef,
         async (snap) => {
@@ -637,7 +675,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       );
 
-      // 2. Parallel RTDB listener
+      // Parallel RTDB listener
       try {
         const rtdbCallRef = rtdbRef(rtdb, `calls/${callToAccept.id}`);
         unsubRtdbCallRef.current = rtdbOnValue(

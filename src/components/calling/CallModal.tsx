@@ -87,7 +87,7 @@ export const CallModal: React.FC = () => {
       : '@user';
 
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-200">
+      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-200">
         <div className="relative bg-slate-900/95 border border-slate-700/80 rounded-3xl p-6 sm:p-8 max-w-sm w-full text-center shadow-2xl text-white overflow-hidden">
           {/* Subtle gradient backdrop ring */}
           <div className="absolute -top-24 -left-24 w-48 h-48 bg-emerald-500/10 rounded-full blur-2xl" />
@@ -172,7 +172,7 @@ export const CallModal: React.FC = () => {
     return (
       <div
         ref={containerRef}
-        className="fixed inset-0 z-50 flex flex-col items-center justify-between bg-slate-950 text-white p-6 select-none overflow-hidden"
+        className="fixed inset-0 z-[100] flex flex-col items-center justify-between bg-slate-950 text-white p-6 select-none overflow-hidden"
       >
         {/* Background ambient lighting */}
         <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none" />
@@ -305,7 +305,7 @@ export const CallModal: React.FC = () => {
   return (
     <div
       ref={containerRef}
-      className="fixed inset-0 z-50 flex flex-col bg-slate-950 text-white select-none overflow-hidden"
+      className="fixed inset-0 z-[100] flex flex-col bg-slate-950 text-white select-none overflow-hidden"
     >
       {/* Top Header Bar */}
       <div className="absolute top-0 inset-x-0 z-20 flex items-center justify-between p-4 bg-gradient-to-b from-black/80 via-black/40 to-transparent">
