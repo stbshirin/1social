@@ -17,7 +17,10 @@ export interface UserPresenceState {
   lastSeen?: number | string | null;
 }
 
-let activePresenceCleanup: (() => void) | null = null;
+// Persistent tab connection state across SPA re-renders
+let currentActiveUid: string | null = null;
+let currentConnectionRef: DatabaseReference | null = null;
+let registeredBeforeUnload = false;
 
 /**
  * Synchronizes presence to Firestore socialApp_users document
@@ -45,6 +48,14 @@ export async function setExplicitOffline(uid: string): Promise<void> {
     const lastSeenRef = ref(rtdb, `status/${uid}/lastSeen`);
     const connectionsRef = ref(rtdb, `status/${uid}/connections`);
 
+    if (currentConnectionRef) {
+      try {
+        await onDisconnect(currentConnectionRef).cancel();
+      } catch (e) {}
+      currentConnectionRef = null;
+    }
+    currentActiveUid = null;
+
     await Promise.all([
       remove(connectionsRef).catch(() => {}),
       set(stateRef, 'offline').catch(() => {}),
@@ -66,10 +77,13 @@ export async function setExplicitOffline(uid: string): Promise<void> {
 export function setupUserPresence(uid: string): () => void {
   if (!uid) return () => {};
 
-  if (activePresenceCleanup) {
-    activePresenceCleanup();
-    activePresenceCleanup = null;
+  // If already initialized for this same user in this tab session, do not re-create connection node
+  if (currentActiveUid === uid && currentConnectionRef) {
+    syncFirestorePresence(uid, true);
+    return () => {};
   }
+
+  currentActiveUid = uid;
 
   try {
     const connectedRef = ref(rtdb, '.info/connected');
@@ -77,7 +91,6 @@ export function setupUserPresence(uid: string): () => void {
     const lastSeenRef = ref(rtdb, `status/${uid}/lastSeen`);
     const stateRef = ref(rtdb, `status/${uid}/state`);
 
-    let currentConnectionRef: DatabaseReference | null = null;
     let hasRegisteredConnection = false;
 
     // Immediately mirror online status to Firestore
@@ -93,17 +106,19 @@ export function setupUserPresence(uid: string): () => void {
         }
 
         try {
-          // Create a unique connection reference for THIS browser tab
-          currentConnectionRef = push(myConnectionsRef);
+          // Create a unique connection reference for THIS browser tab session
+          if (!currentConnectionRef) {
+            currentConnectionRef = push(myConnectionsRef);
+          }
 
-          // When this connection is lost / tab closes:
-          // 1. Remove this connection key
+          // When this connection is lost or tab closes:
+          // 1. Remove this tab connection key
           await onDisconnect(currentConnectionRef).remove();
 
           // 2. Set lastSeen timestamp on disconnect
           await onDisconnect(lastSeenRef).set(rtdbServerTimestamp());
 
-          // 3. Mark this tab's connection as active
+          // 3. Mark tab connection as active
           await set(currentConnectionRef, true);
           await set(stateRef, 'online');
           await set(lastSeenRef, rtdbServerTimestamp());
@@ -124,7 +139,8 @@ export function setupUserPresence(uid: string): () => void {
       myConnectionsRef,
       async (snap) => {
         const connections = snap.val();
-        const hasActive = connections !== null && typeof connections === 'object' && Object.keys(connections).length > 0;
+        const hasActive =
+          connections !== null && typeof connections === 'object' && Object.keys(connections).length > 0;
 
         if (hasActive) {
           hasRegisteredConnection = true;
@@ -143,27 +159,23 @@ export function setupUserPresence(uid: string): () => void {
     );
 
     // Browser unload / close event to immediately remove this tab's connection
-    const handleBeforeUnload = () => {
-      if (currentConnectionRef) {
-        remove(currentConnectionRef).catch(() => {});
-      }
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    window.addEventListener('pagehide', handleBeforeUnload);
+    if (!registeredBeforeUnload) {
+      registeredBeforeUnload = true;
+      const handleBeforeUnload = () => {
+        if (currentConnectionRef) {
+          remove(currentConnectionRef).catch(() => {});
+        }
+      };
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      window.addEventListener('pagehide', handleBeforeUnload);
+    }
 
-    const cleanup = () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      window.removeEventListener('pagehide', handleBeforeUnload);
-
-      if (currentConnectionRef) {
-        remove(currentConnectionRef).catch(() => {});
-      }
+    return () => {
+      // Note: In an SPA, we preserve currentConnectionRef during internal route navigation.
+      // Connection is cleaned up on logout (setExplicitOffline) or tab unload.
       unsubscribeConnected();
       unsubscribeConnections();
     };
-
-    activePresenceCleanup = cleanup;
-    return cleanup;
   } catch (err) {
     console.warn('Presence setup warning (RTDB offline or restricted):', err);
     return () => {};
@@ -172,7 +184,7 @@ export function setupUserPresence(uid: string): () => void {
 
 /**
  * Subscribes to any user's real-time online/offline presence state.
- * Uses Realtime Database with automatic Firestore fallback.
+ * Uses Realtime Database and Firestore combined for 100% reliable state.
  */
 export function subscribeToUserPresence(
   uid: string,
@@ -183,88 +195,108 @@ export function subscribeToUserPresence(
     return () => {};
   }
 
-  // If the target user is the authenticated user in this client, they are active now
+  // If the target user is the authenticated user in this client, they are always Online
   const isSelf = auth.currentUser?.uid === uid;
   if (isSelf) {
     onUpdate({ isOnline: true, lastSeen: Date.now() });
   }
 
   let isMounted = true;
+  let rtdbPresence: { isOnline: boolean; lastSeen: number | string | null } = {
+    isOnline: isSelf,
+    lastSeen: isSelf ? Date.now() : null,
+  };
+  let firestorePresence: { isOnline: boolean; lastSeen: number | string | null } = {
+    isOnline: isSelf,
+    lastSeen: isSelf ? Date.now() : null,
+  };
+
+  const emit = () => {
+    if (!isMounted) return;
+    if (isSelf) {
+      onUpdate({ isOnline: true, lastSeen: Date.now() });
+      return;
+    }
+    const online = rtdbPresence.isOnline || firestorePresence.isOnline;
+    const lastSeen = online
+      ? Date.now()
+      : (rtdbPresence.lastSeen || firestorePresence.lastSeen || null);
+    onUpdate({ isOnline: online, lastSeen });
+  };
+
+  let unsubRtdb: (() => void) | null = null;
   let unsubFirestore: (() => void) | null = null;
 
   try {
     const statusRef = ref(rtdb, `status/${uid}`);
-
-    const unsubRtdb = onValue(
+    unsubRtdb = onValue(
       statusRef,
       (snapshot) => {
         if (!isMounted) return;
         const val = snapshot.val();
         if (val) {
           const connections = val.connections;
-          const hasActiveConnections = connections && typeof connections === 'object' && Object.keys(connections).length > 0;
-          const isOnline = isSelf || Boolean(hasActiveConnections || val.state === 'online');
-          const lastSeen = isOnline ? Date.now() : (val.lastSeen || null);
-
-          onUpdate({ isOnline, lastSeen });
-          return;
+          const hasActiveConnections =
+            connections && typeof connections === 'object' && Object.keys(connections).length > 0;
+          const isOnline = Boolean(hasActiveConnections || val.state === 'online');
+          rtdbPresence = {
+            isOnline,
+            lastSeen: isOnline ? Date.now() : (val.lastSeen || null),
+          };
+        } else {
+          rtdbPresence = { isOnline: false, lastSeen: null };
         }
-
-        // If no RTDB status node exists yet, check Firestore socialApp_users
-        fallbackFirestoreListener();
+        emit();
       },
       (error) => {
-        console.warn('Presence subscription notice (RTDB), fallback to Firestore:', error?.message || error);
-        fallbackFirestoreListener();
+        console.warn('Presence RTDB listener notice:', error?.message || error);
       }
     );
-
-    function fallbackFirestoreListener() {
-      if (unsubFirestore || !isMounted) return;
-      try {
-        const userDocRef = doc(db, 'socialApp_users', uid);
-        unsubFirestore = onSnapshot(
-          userDocRef,
-          (docSnap) => {
-            if (!isMounted) return;
-            if (docSnap.exists()) {
-              const data = docSnap.data();
-              const isOnline = isSelf || Boolean(data.isOnline);
-              const lastSeen = isOnline ? Date.now() : (data.lastSeen || null);
-              onUpdate({ isOnline, lastSeen });
-            } else {
-              onUpdate({ isOnline: isSelf, lastSeen: isSelf ? Date.now() : null });
-            }
-          },
-          (err) => {
-            console.warn('Firestore presence fallback notice:', err?.message || err);
-            onUpdate({ isOnline: isSelf, lastSeen: isSelf ? Date.now() : null });
-          }
-        );
-      } catch {
-        onUpdate({ isOnline: isSelf, lastSeen: isSelf ? Date.now() : null });
-      }
-    }
-
-    return () => {
-      isMounted = false;
-      unsubRtdb();
-      if (unsubFirestore) {
-        unsubFirestore();
-      }
-    };
-  } catch (err) {
-    onUpdate({ isOnline: isSelf, lastSeen: isSelf ? Date.now() : null });
-    return () => {};
+  } catch (e) {
+    console.warn('RTDB subscribe error:', e);
   }
+
+  try {
+    const userDocRef = doc(db, 'socialApp_users', uid);
+    unsubFirestore = onSnapshot(
+      userDocRef,
+      (docSnap) => {
+        if (!isMounted) return;
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          const isOnline = Boolean(data.isOnline);
+          firestorePresence = {
+            isOnline,
+            lastSeen: isOnline ? Date.now() : (data.lastSeen || null),
+          };
+        } else {
+          firestorePresence = { isOnline: false, lastSeen: null };
+        }
+        emit();
+      },
+      (err) => {
+        console.warn('Firestore presence listener notice:', err?.message || err);
+      }
+    );
+  } catch (e) {
+    console.warn('Firestore subscribe error:', e);
+  }
+
+  return () => {
+    isMounted = false;
+    if (unsubRtdb) unsubRtdb();
+    if (unsubFirestore) unsubFirestore();
+  };
 }
 
 /**
- * Formats presence timestamp into user-friendly text
+ * Formats presence timestamp into user-friendly text:
+ * - Online: "Online"
+ * - Offline: "Offline" or "Last seen Xm ago" / "Last seen Xh ago"
  */
 export function formatLastSeen(lastSeen?: number | string | null, isOnline?: boolean): string {
   if (isOnline) {
-    return 'Active now';
+    return 'Online';
   }
 
   if (!lastSeen) {
@@ -278,15 +310,15 @@ export function formatLastSeen(lastSeen?: number | string | null, isOnline?: boo
     const diffSeconds = Math.floor((Date.now() - timestamp) / 1000);
 
     if (diffSeconds < 60) {
-      return 'Active just now';
+      return 'Last seen just now';
     }
     if (diffSeconds < 3600) {
       const mins = Math.floor(diffSeconds / 60);
-      return `Active ${mins}m ago`;
+      return `Last seen ${mins}m ago`;
     }
     if (diffSeconds < 86400) {
       const hours = Math.floor(diffSeconds / 3600);
-      return `Active ${hours}h ago`;
+      return `Last seen ${hours}h ago`;
     }
     return `Last seen ${new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
   } catch {

@@ -9,12 +9,20 @@ import {
   where,
   addDoc,
   serverTimestamp,
-  getDocs,
 } from 'firebase/firestore';
-import { db } from '../firebase/config';
+import {
+  ref as rtdbRef,
+  set as rtdbSet,
+  update as rtdbUpdate,
+  remove as rtdbRemove,
+  onValue as rtdbOnValue,
+  onDisconnect as rtdbOnDisconnect,
+  serverTimestamp as rtdbServerTimestamp,
+} from 'firebase/database';
+import { db, rtdb } from '../firebase/config';
 import { useAuth } from './AuthContext';
 import { CallSession, UserProfile } from '../types';
-import { ICE_SERVERS, getMediaStream } from '../services/webrtc';
+import { ICE_SERVERS, getMediaStream, stopMediaStream } from '../services/webrtc';
 import { soundEffects } from '../services/soundEffects';
 import { formatCallDuration, recordCallHistory } from '../services/callHistoryService';
 
@@ -54,15 +62,20 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [callDuration, setCallDuration] = useState(0);
 
+  // Persistent refs to avoid closure stale state
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const timerRef = useRef<any>(null);
   const unsubCallRef = useRef<(() => void) | null>(null);
+  const unsubRtdbCallRef = useRef<(() => void) | null>(null);
   const unsubCandidatesRef = useRef<(() => void) | null>(null);
   const connectedAtRef = useRef<number | null>(null);
   const callDurationRef = useRef<number>(0);
   const activeCallRef = useRef<CallSession | null>(null);
+  const isCleaningUpRef = useRef<boolean>(false);
 
-  // Sync ref with state
+  // Keep refs synchronized
   useEffect(() => {
     activeCallRef.current = activeCall;
   }, [activeCall]);
@@ -71,49 +84,103 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     callDurationRef.current = callDuration;
   }, [callDuration]);
 
-  // Clear timers & streams
+  // Complete cleanup: Releases hardware (camera & mic), peer connection, listeners, and timers
   const cleanupMedia = () => {
     soundEffects.stopRingtone();
+
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
+
+    if (unsubRtdbCallRef.current) {
+      try {
+        unsubRtdbCallRef.current();
+      } catch (e) {}
+      unsubRtdbCallRef.current = null;
+    }
+
     if (unsubCallRef.current) {
-      unsubCallRef.current();
+      try {
+        unsubCallRef.current();
+      } catch (e) {}
       unsubCallRef.current = null;
     }
+
     if (unsubCandidatesRef.current) {
-      unsubCandidatesRef.current();
+      try {
+        unsubCandidatesRef.current();
+      } catch (e) {}
       unsubCandidatesRef.current = null;
     }
-    if (localStream) {
-      localStream.getTracks().forEach((t) => t.stop());
-      setLocalStream(null);
+
+    // Cancel RTDB onDisconnect if call was active
+    if (activeCallRef.current?.id) {
+      try {
+        const callStatusRef = rtdbRef(rtdb, `calls/${activeCallRef.current.id}/status`);
+        rtdbOnDisconnect(callStatusRef).cancel().catch(() => {});
+      } catch (e) {}
     }
+
+    // Immediately stop local media hardware (camera LED & microphone turn off)
+    stopMediaStream(localStreamRef.current);
+    localStreamRef.current = null;
+    setLocalStream(null);
+
+    // Stop remote media stream
+    stopMediaStream(remoteStreamRef.current);
+    remoteStreamRef.current = null;
+    setRemoteStream(null);
+
+    // Close WebRTC Peer Connection
     if (pcRef.current) {
-      pcRef.current.close();
+      try {
+        pcRef.current.getSenders().forEach((sender) => {
+          if (sender.track) {
+            try {
+              sender.track.stop();
+              sender.track.enabled = false;
+            } catch (e) {}
+          }
+        });
+        pcRef.current.close();
+      } catch (e) {
+        console.warn('Error closing peer connection:', e);
+      }
       pcRef.current = null;
     }
+
     connectedAtRef.current = null;
     callDurationRef.current = 0;
     activeCallRef.current = null;
-    setRemoteStream(null);
+
     setActiveCall(null);
     setIncomingCall(null);
     setIsMuted(false);
     setIsVideoOff(false);
     setIsScreenSharing(false);
     setCallDuration(0);
+    isCleaningUpRef.current = false;
   };
 
-  // Clean exit if page is closed or reloaded
+  // Graceful browser close / tab switch exit handler
   useEffect(() => {
     const handleExit = () => {
-      if (activeCallRef.current) {
-        const cur = activeCallRef.current;
+      const cur = activeCallRef.current;
+      if (cur) {
         const dur = connectedAtRef.current
           ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
           : 0;
+
+        try {
+          rtdbUpdate(rtdbRef(rtdb, `calls/${cur.id}`), {
+            status: 'ended',
+            endedBy: currentUser?.uid || '',
+            endedAt: Date.now(),
+            duration: dur,
+          }).catch(() => {});
+        } catch (e) {}
+
         recordCallHistory({
           callId: cur.id,
           callerId: cur.callerId,
@@ -128,6 +195,8 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           connectedAt: connectedAtRef.current,
           endedAt: Date.now(),
         }).catch(() => {});
+
+        cleanupMedia();
       }
     };
 
@@ -137,45 +206,74 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       window.removeEventListener('beforeunload', handleExit);
       window.removeEventListener('pagehide', handleExit);
     };
-  }, []);
+  }, [currentUser?.uid]);
 
-  // Listen for incoming calls for the current user
+  // Dual-listener for incoming calls: RTDB userCalls (instant <50ms) + Firestore fallback
   useEffect(() => {
     if (!currentUser) return;
 
+    // 1. RTDB incoming calls listener
+    const userCallsNode = rtdbRef(rtdb, `userCalls/${currentUser.uid}`);
+    const unsubRtdb = rtdbOnValue(
+      userCallsNode,
+      (snapshot) => {
+        const data = snapshot.val();
+        if (data && typeof data === 'object') {
+          const callList = Object.values(data) as CallSession[];
+          const incoming = callList.find((c) => c.status === 'ringing' || c.status === 'offering');
+
+          if (incoming && !activeCallRef.current) {
+            setIncomingCall(incoming);
+            soundEffects.startIncomingRingtone();
+            return;
+          }
+        }
+
+        // If no active incoming call in RTDB, silence ringtone if not in active call
+        if (!activeCallRef.current && incomingCall) {
+          soundEffects.stopRingtone();
+          setIncomingCall(null);
+        }
+      },
+      (error) => {
+        console.warn('RTDB userCalls listener notice:', error?.message || error);
+      }
+    );
+
+    // 2. Firestore incoming calls query fallback
     const q = query(
       collection(db, 'calls'),
       where('calleeId', '==', currentUser.uid),
       where('status', 'in', ['offering', 'ringing'])
     );
 
-    const unsubscribe = onSnapshot(
+    const unsubFirestore = onSnapshot(
       q,
       (snapshot) => {
         if (!snapshot.empty) {
           const callDoc = snapshot.docs[0];
           const data = { id: callDoc.id, ...callDoc.data() } as CallSession;
-          // If we're not currently on a call
-          if (!activeCall && !incomingCall) {
+          if (!activeCallRef.current && !incomingCall) {
             setIncomingCall(data);
             soundEffects.startIncomingRingtone();
           }
-        } else {
-          if (incomingCall) {
-            soundEffects.stopRingtone();
-            setIncomingCall(null);
-          }
+        } else if (!activeCallRef.current && incomingCall) {
+          soundEffects.stopRingtone();
+          setIncomingCall(null);
         }
       },
       (error) => {
-        console.warn('Incoming calls listener notice:', error?.message || error);
+        console.warn('Firestore incoming calls listener notice:', error?.message || error);
       }
     );
 
-    return () => unsubscribe();
-  }, [currentUser, activeCall, incomingCall]);
+    return () => {
+      unsubRtdb();
+      unsubFirestore();
+    };
+  }, [currentUser?.uid, incomingCall]);
 
-  // Initiate an outgoing call
+  // Initiate an outgoing Audio or Video Call
   const initiateCall = async (callee: UserProfile, type: 'audio' | 'video') => {
     if (!currentUser || !userProfile) return;
 
@@ -184,17 +282,20 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       soundEffects.startOutgoingRingtone();
 
       const stream = await getMediaStream(type, facingMode);
+      localStreamRef.current = stream;
       setLocalStream(stream);
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
       pcRef.current = pc;
 
-      // Add local tracks to peer connection
+      // Add local audio and video tracks to WebRTC peer connection
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-      // Handle remote track
+      // Handle receiving remote tracks
       const remote = new MediaStream();
+      remoteStreamRef.current = remote;
       setRemoteStream(remote);
+
       pc.ontrack = (event) => {
         event.streams[0].getTracks().forEach((track) => {
           remote.addTrack(track);
@@ -214,16 +315,16 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
               createdAt: serverTimestamp(),
             });
           } catch (e) {
-            console.warn('Error adding ICE candidate:', e);
+            console.warn('Error adding caller ICE candidate:', e);
           }
         }
       };
 
-      // Create offer
+      // Create WebRTC Offer
       const offerDescription = await pc.createOffer();
       await pc.setLocalDescription(offerDescription);
 
-      const newCall: CallSession = {
+      const newCallData: CallSession = {
         id: callId,
         callerId: currentUser.uid,
         callerName: userProfile.displayName,
@@ -240,32 +341,56 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         createdAt: new Date().toISOString(),
       };
 
+      // 1. Dual-write to Realtime Database for sub-50ms signaling and server-side onDisconnect
+      const rtdbCallRef = rtdbRef(rtdb, `calls/${callId}`);
+      const rtdbCalleeCallRef = rtdbRef(rtdb, `userCalls/${callee.uid}/${callId}`);
+
+      await Promise.all([
+        rtdbSet(rtdbCallRef, {
+          ...newCallData,
+          createdAt: Date.now(),
+        }),
+        rtdbSet(rtdbCalleeCallRef, {
+          ...newCallData,
+          createdAt: Date.now(),
+        }),
+      ]);
+
+      // Server-side onDisconnect ensures that if caller closes browser/loses net, callee terminates immediately
+      try {
+        await rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callId}/status`)).set('ended');
+        await rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callId}/endedBy`)).set(currentUser.uid);
+        await rtdbOnDisconnect(rtdbCalleeCallRef).remove();
+      } catch (disconnectErr) {
+        console.warn('onDisconnect registration notice:', disconnectErr);
+      }
+
+      // 2. Write to Firestore as persistent record
       await setDoc(callDocRef, {
-        ...newCall,
+        ...newCallData,
         createdAt: serverTimestamp(),
       });
 
-      setActiveCall(newCall);
-      activeCallRef.current = newCall;
+      setActiveCall(newCallData);
+      activeCallRef.current = newCallData;
 
-      // Listen for answer and call state changes
-      unsubCallRef.current = onSnapshot(
-        callDocRef,
+      // Realtime listener for remote answer and instant disconnect synchronization via RTDB
+      unsubRtdbCallRef.current = rtdbOnValue(
+        rtdbCallRef,
         async (snapshot) => {
-          const data = snapshot.data();
+          const data = snapshot.val();
           if (!data) return;
 
+          // Remote answered call
           if (data.status === 'accepted' && data.answer && !pc.currentRemoteDescription) {
             soundEffects.playCallConnected();
             const answerDescription = new RTCSessionDescription(data.answer);
             await pc.setRemoteDescription(answerDescription);
 
-            // Set connected timestamp
             const connTimestamp = data.connectedAt || Date.now();
             connectedAtRef.current = connTimestamp;
             setCallDuration(0);
 
-            // Start accurate duration timer from connection timestamp
             if (!timerRef.current) {
               timerRef.current = setInterval(() => {
                 if (connectedAtRef.current) {
@@ -276,6 +401,10 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
             setActiveCall((prev) => (prev ? { ...prev, status: 'accepted', connectedAt: connTimestamp } : null));
           } else if (data.status === 'rejected' || data.status === 'ended') {
+            // Immediate real-time remote disconnect!
+            if (isCleaningUpRef.current) return;
+            isCleaningUpRef.current = true;
+
             soundEffects.playCallEnded();
             const finalDuration = connectedAtRef.current
               ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
@@ -300,11 +429,11 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         },
         (error) => {
-          console.warn('CallDoc listener notice:', error?.message || error);
+          console.warn('RTDB call signaling listener notice:', error?.message || error);
         }
       );
 
-      // Listen for remote ICE candidates from callee
+      // Listen for remote ICE candidates from callee via Firestore
       const candidatesCol = collection(db, 'calls', callId, 'candidates');
       unsubCandidatesRef.current = onSnapshot(
         candidatesCol,
@@ -312,9 +441,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           snap.docChanges().forEach(async (change) => {
             if (change.type === 'added') {
               const cData = change.doc.data();
-              if (cData.senderId !== currentUser.uid && cData.candidate) {
+              if (cData.senderId !== currentUser.uid && cData.candidate && pcRef.current) {
                 try {
-                  await pc.addIceCandidate(new RTCIceCandidate(cData.candidate));
+                  await pcRef.current.addIceCandidate(new RTCIceCandidate(cData.candidate));
                 } catch (err) {
                   console.warn('Error adding received ICE candidate:', err);
                 }
@@ -343,6 +472,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       const stream = await getMediaStream(callToAccept.type, facingMode);
+      localStreamRef.current = stream;
       setLocalStream(stream);
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -351,7 +481,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
       const remote = new MediaStream();
+      remoteStreamRef.current = remote;
       setRemoteStream(remote);
+
       pc.ontrack = (event) => {
         event.streams[0].getTracks().forEach((track) => {
           remote.addTrack(track);
@@ -375,7 +507,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       };
 
-      // Set remote offer & create answer
+      // Set remote offer & generate answer
       await pc.setRemoteDescription(new RTCSessionDescription(callToAccept.offer));
       const answerDescription = await pc.createAnswer();
       await pc.setLocalDescription(answerDescription);
@@ -383,6 +515,29 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const connectedNow = Date.now();
       connectedAtRef.current = connectedNow;
 
+      // Update RTDB for instant connection
+      const rtdbCallRef = rtdbRef(rtdb, `calls/${callToAccept.id}`);
+      await rtdbUpdate(rtdbCallRef, {
+        answer: {
+          type: answerDescription.type,
+          sdp: answerDescription.sdp,
+        },
+        status: 'accepted',
+        connectedAt: connectedNow,
+      });
+
+      // Remove from userCalls
+      await rtdbRemove(rtdbRef(rtdb, `userCalls/${currentUser.uid}/${callToAccept.id}`)).catch(() => {});
+
+      // Server-side onDisconnect: if callee disconnects abruptly, mark call ended in RTDB
+      try {
+        await rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callToAccept.id}/status`)).set('ended');
+        await rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callToAccept.id}/endedBy`)).set(currentUser.uid);
+      } catch (disconnectErr) {
+        console.warn('onDisconnect registration notice:', disconnectErr);
+      }
+
+      // Update Firestore
       await updateDoc(callDocRef, {
         answer: {
           type: answerDescription.type,
@@ -411,12 +566,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }, 1000);
 
-      // Listen for call termination
-      unsubCallRef.current = onSnapshot(
-        callDocRef,
+      // Listen for instantaneous call termination via RTDB
+      unsubRtdbCallRef.current = rtdbOnValue(
+        rtdbCallRef,
         async (snap) => {
-          const data = snap.data();
+          const data = snap.val();
           if (data && (data.status === 'ended' || data.status === 'rejected')) {
+            if (isCleaningUpRef.current) return;
+            isCleaningUpRef.current = true;
+
             soundEffects.playCallEnded();
             const finalDuration = connectedAtRef.current
               ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
@@ -441,11 +599,11 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         },
         (error) => {
-          console.warn('Call termination listener notice:', error?.message || error);
+          console.warn('RTDB termination listener notice:', error?.message || error);
         }
       );
 
-      // Listen for caller's ICE candidates
+      // Listen for caller's ICE candidates via Firestore
       const candidatesCol = collection(db, 'calls', callToAccept.id, 'candidates');
       unsubCandidatesRef.current = onSnapshot(
         candidatesCol,
@@ -453,9 +611,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           snap.docChanges().forEach(async (change) => {
             if (change.type === 'added') {
               const cData = change.doc.data();
-              if (cData.senderId !== currentUser.uid && cData.candidate) {
+              if (cData.senderId !== currentUser.uid && cData.candidate && pcRef.current) {
                 try {
-                  await pc.addIceCandidate(new RTCIceCandidate(cData.candidate));
+                  await pcRef.current.addIceCandidate(new RTCIceCandidate(cData.candidate));
                 } catch (e) {
                   console.warn('Error adding caller ICE candidate:', e);
                 }
@@ -480,6 +638,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (incomingCall) {
       const callToReject = incomingCall;
       try {
+        // Update RTDB status to rejected and remove from userCalls
+        await rtdbUpdate(rtdbRef(rtdb, `calls/${callToReject.id}`), {
+          status: 'rejected',
+          endedAt: Date.now(),
+        }).catch(() => {});
+
+        await rtdbRemove(rtdbRef(rtdb, `userCalls/${currentUser?.uid}/${callToReject.id}`)).catch(() => {});
+
+        // Update Firestore status
         const callDocRef = doc(db, 'calls', callToReject.id);
         await updateDoc(callDocRef, {
           status: 'rejected',
@@ -507,7 +674,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIncomingCall(null);
   };
 
-  // End active call
+  // End active call (caller or callee clicks "End Call")
   const endCall = async () => {
     soundEffects.playCallEnded();
     const curCall = activeCallRef.current || activeCall;
@@ -516,6 +683,22 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       : callDurationRef.current || 0;
 
     if (curCall) {
+      isCleaningUpRef.current = true;
+
+      // 1. Immediately update RTDB to trigger instant disconnect on remote device
+      try {
+        await rtdbUpdate(rtdbRef(rtdb, `calls/${curCall.id}`), {
+          status: 'ended',
+          duration: finalDuration,
+          endedBy: currentUser?.uid || '',
+          endedAt: Date.now(),
+        });
+        await rtdbRemove(rtdbRef(rtdb, `userCalls/${curCall.calleeId}/${curCall.id}`)).catch(() => {});
+      } catch (rtdbErr) {
+        console.warn('RTDB end call notice:', rtdbErr);
+      }
+
+      // 2. Update Firestore
       try {
         const callDocRef = doc(db, 'calls', curCall.id);
         await updateDoc(callDocRef, {
@@ -527,6 +710,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.warn('Error updating ended call in Firestore:', err);
       }
 
+      // 3. Record call history with exact duration
       await recordCallHistory({
         callId: curCall.id,
         callerId: curCall.callerId,
@@ -542,13 +726,16 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         endedAt: Date.now(),
       }).catch(() => {});
     }
+
+    // Immediately stop local media hardware (camera LED & mic) and cleanup
     cleanupMedia();
   };
 
-  // Toggle Microphone
+  // Toggle Microphone Mute
   const toggleMute = () => {
-    if (localStream) {
-      const audioTrack = localStream.getAudioTracks()[0];
+    const stream = localStreamRef.current || localStream;
+    if (stream) {
+      const audioTrack = stream.getAudioTracks()[0];
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         setIsMuted(!audioTrack.enabled);
@@ -558,8 +745,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Toggle Camera
   const toggleVideo = () => {
-    if (localStream) {
-      const videoTrack = localStream.getVideoTracks()[0];
+    const stream = localStreamRef.current || localStream;
+    if (stream) {
+      const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoOff(!videoTrack.enabled);
@@ -569,7 +757,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Switch Camera (Mobile front / rear)
   const switchCamera = async () => {
-    if (!localStream || !pcRef.current) return;
+    const stream = localStreamRef.current || localStream;
+    if (!stream || !pcRef.current) return;
+
     const nextMode = facingMode === 'user' ? 'environment' : 'user';
     setFacingMode(nextMode);
 
@@ -583,13 +773,12 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (sender && newVideoTrack) {
         await sender.replaceTrack(newVideoTrack);
-        // Replace in local stream
-        const oldTrack = localStream.getVideoTracks()[0];
+        const oldTrack = stream.getVideoTracks()[0];
         if (oldTrack) {
-          localStream.removeTrack(oldTrack);
+          stream.removeTrack(oldTrack);
           oldTrack.stop();
         }
-        localStream.addTrack(newVideoTrack);
+        stream.addTrack(newVideoTrack);
       }
     } catch (err) {
       console.warn('Error switching camera:', err);
@@ -598,7 +787,8 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Screen Share Toggle
   const toggleScreenShare = async () => {
-    if (!pcRef.current || !localStream) return;
+    const stream = localStreamRef.current || localStream;
+    if (!pcRef.current || !stream) return;
 
     if (!isScreenSharing) {
       try {
@@ -611,7 +801,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setIsScreenSharing(true);
 
           screenTrack.onended = async () => {
-            // Restore camera track
             const camStream = await getMediaStream('video', facingMode);
             const camTrack = camStream.getVideoTracks()[0];
             await sender.replaceTrack(camTrack);
@@ -622,7 +811,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.warn('Screen share canceled or denied:', err);
       }
     } else {
-      // Revert back to camera
       try {
         const camStream = await getMediaStream('video', facingMode);
         const camTrack = camStream.getVideoTracks()[0];

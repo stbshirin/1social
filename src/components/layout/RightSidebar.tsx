@@ -35,7 +35,7 @@ const QuickConnectUserRow: React.FC<{
             className="w-9 h-9 rounded-full object-cover border border-slate-200 dark:border-slate-700"
           />
           <span
-            title={presence.isOnline ? 'Online now' : presence.lastSeenText}
+            title={presence.isOnline ? 'Online' : presence.lastSeenText}
             className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 ${
               presence.isOnline ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-600'
             }`}
@@ -46,7 +46,7 @@ const QuickConnectUserRow: React.FC<{
             {user.displayName}
           </p>
           <p className="text-[11px] text-slate-400 truncate">
-            {presence.isOnline ? 'Active now' : `@${user.username}`}
+            {presence.isOnline ? <span className="text-emerald-500 font-medium">Online</span> : `@${user.username}`}
           </p>
         </div>
       </div>
