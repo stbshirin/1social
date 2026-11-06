@@ -12,6 +12,18 @@
         ".write": "auth != null && auth.uid === $uid"
       }
     },
+    "calls": {
+      "$callId": {
+        ".read": "auth != null && (data.child('callerId').val() === auth.uid || data.child('calleeId').val() === auth.uid || newData.child('callerId').val() === auth.uid || newData.child('calleeId').val() === auth.uid)",
+        ".write": "auth != null && (data.val() == null || data.child('callerId').val() === auth.uid || data.child('calleeId').val() === auth.uid || newData.child('callerId').val() === auth.uid || newData.child('calleeId').val() === auth.uid)"
+      }
+    },
+    "userCalls": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null"
+      }
+    },
     "callHistory": {
       ".read": "auth != null",
       "$callId": {

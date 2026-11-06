@@ -989,7 +989,7 @@ const MessengerChatHeader: React.FC<MessengerChatHeaderProps> = ({
                 }`}
               />
               <span className={presence.isOnline ? 'text-emerald-500 font-semibold' : 'text-slate-400'}>
-                {presence.isOnline ? 'Active Now' : presence.lastSeenText}
+                {presence.isOnline ? 'Online' : presence.lastSeenText}
               </span>
             </div>
           )}

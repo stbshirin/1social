@@ -75,7 +75,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [loadingFollowList, setLoadingFollowList] = useState(false);
 
   // Real-time online/offline presence for the active profile
-  const presence = usePresence(currentUid);
+  const presence = usePresence(currentUid, isMe);
 
   // Direct file upload state for avatar & cover photo
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
