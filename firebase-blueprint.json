@@ -179,6 +179,20 @@
         "createdAt": { "type": "string" }
       },
       "required": ["reporterId", "targetType", "targetId", "reason", "status"]
+    },
+    "FCMToken": {
+      "title": "FCMToken",
+      "description": "FCM Web Push device registration token for background notifications",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "token": { "type": "string", "maxLength": 1024 },
+        "platform": { "type": "string", "enum": ["android", "ios", "desktop", "web"] },
+        "userAgent": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["userId", "token"]
     }
   },
   "firestore": {
@@ -246,6 +260,10 @@
     "/reports/{reportId}": {
       "schema": { "$ref": "#/entities/Report" },
       "description": "Content and user moderation reports"
+    },
+    "/fcmTokens/{tokenId}": {
+      "schema": { "$ref": "#/entities/FCMToken" },
+      "description": "Registered FCM Web Push device tokens"
     }
   }
 }

@@ -26,6 +26,7 @@ import {
   updateSocialUserProfile,
 } from '../services/userService';
 import { setExplicitOffline } from '../services/presenceService';
+import { requestFCMToken, removeFCMToken } from '../services/fcmService';
 
 interface AuthContextType {
   currentUser: User | null;
@@ -39,6 +40,7 @@ interface AuthContextType {
   logOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   updateUserProfile: (data: Partial<UserProfile>) => Promise<void>;
+  requestPushPermissions: () => Promise<string | null>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -164,6 +166,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           console.warn('Error attaching profile listener:', e);
         }
 
+        // Auto-sync FCM token if permission was previously granted
+        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+          requestFCMToken(user.uid).catch(() => {});
+        }
+
         setLoading(false);
         return () => {
           if (unsubscribeProfile) {
@@ -179,6 +186,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     return () => unsubscribeAuth();
   }, []);
+
+  const requestPushPermissions = async (): Promise<string | null> => {
+    if (!currentUser?.uid) return null;
+    return await requestFCMToken(currentUser.uid);
+  };
 
   const signUpWithEmail = async (email: string, pass: string, name: string, username: string) => {
     const cred = await createUserWithEmailAndPassword(auth, email, pass);
@@ -203,7 +215,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logOut = async () => {
     if (currentUser?.uid) {
-      await setExplicitOffline(currentUser.uid).catch(() => {});
+      await Promise.all([
+        setExplicitOffline(currentUser.uid).catch(() => {}),
+        removeFCMToken(currentUser.uid).catch(() => {}),
+      ]);
     }
     await signOut(auth);
     setUserProfile(null);
@@ -259,6 +274,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         logOut,
         resetPassword,
         updateUserProfile,
+        requestPushPermissions,
       }}
     >
       {children}
