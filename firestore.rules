@@ -15,6 +15,10 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isMainAdmin() {
+      return isSignedIn() && request.auth.uid == 'UI28ofvzB7cjNJvCG0DvYgbCu9J3';
+    }
+
     function isAdmin() {
       return isSignedIn() && (
         request.auth.uid == 'UI28ofvzB7cjNJvCG0DvYgbCu9J3' ||
@@ -31,27 +35,52 @@ service cloud.firestore {
       return resource.data;
     }
 
+    function isValidVerifiedPayload() {
+      return (incoming().isVerified is bool) &&
+        (!('verifiedAt' in incoming()) || incoming().verifiedAt == null || incoming().verifiedAt is string) &&
+        (!('verifiedBy' in incoming()) || incoming().verifiedBy == null || incoming().verifiedBy == 'UI28ofvzB7cjNJvCG0DvYgbCu9J3');
+    }
+
     // Separate SocialApp Users Collection
     match /socialApp_users/{userId} {
       allow read: if isSignedIn();
-      allow create: if isOwner(userId) && incoming().uid == userId;
+      allow create: if isOwner(userId) &&
+        incoming().uid == userId &&
+        !incoming().keys().hasAny(['verifiedAt', 'verifiedBy']) &&
+        (!('isVerified' in incoming()) || incoming().isVerified == false) &&
+        (!('role' in incoming()) || incoming().role == 'user' || isMainAdmin() || request.auth.token.email == 'stb.shirin@gmail.com');
       allow update: if isSignedIn() && (
         (isOwner(userId) && incoming().uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'username', 'photoURL', 'coverURL', 'bio', 'location', 'website', 'adminBadgeVisibility', 'isOnline', 'lastSeen', 'updatedAt'])) ||
-        (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['isSuspended', 'role', 'updatedAt']))
+        (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['isSuspended', 'role', 'updatedAt'])) ||
+        (isMainAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['isVerified', 'verifiedAt', 'verifiedBy', 'updatedAt']) && isValidVerifiedPayload())
       );
       allow delete: if isAdmin();
     }
 
     // Hierarchical socialApp Document & Subcollections
     match /socialApp/{docId} {
-      allow read, write: if isSignedIn();
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (
+        isMainAdmin() ||
+        (docId == 'users' && incoming().keys().hasOnly([request.auth.uid]))
+      );
+      allow update: if isSignedIn() && (
+        isMainAdmin() ||
+        (docId == 'users' && incoming().diff(existing()).affectedKeys().hasOnly([request.auth.uid]))
+      );
+      allow delete: if isMainAdmin();
 
       match /users/{userId} {
         allow read: if isSignedIn();
-        allow create: if isOwner(userId) && incoming().uid == userId;
+        allow create: if isOwner(userId) &&
+          incoming().uid == userId &&
+          !incoming().keys().hasAny(['verifiedAt', 'verifiedBy']) &&
+          (!('isVerified' in incoming()) || incoming().isVerified == false) &&
+          (!('role' in incoming()) || incoming().role == 'user' || isMainAdmin() || request.auth.token.email == 'stb.shirin@gmail.com');
         allow update: if isSignedIn() && (
-          (isOwner(userId) && incoming().uid == userId) ||
-          isAdmin()
+          (isOwner(userId) && incoming().uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'username', 'photoURL', 'coverURL', 'bio', 'location', 'website', 'adminBadgeVisibility', 'isOnline', 'lastSeen', 'updatedAt'])) ||
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['isSuspended', 'role', 'updatedAt'])) ||
+          (isMainAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['isVerified', 'verifiedAt', 'verifiedBy', 'updatedAt']) && isValidVerifiedPayload())
         );
         allow delete: if isAdmin();
       }

@@ -9,7 +9,17 @@
     "users": {
       "$uid": {
         ".read": "auth != null",
-        ".write": "auth != null && auth.uid === $uid"
+        ".write": "auth != null && (auth.uid === $uid || auth.uid === 'UI28ofvzB7cjNJvCG0DvYgbCu9J3')",
+        ".validate": "auth.uid === 'UI28ofvzB7cjNJvCG0DvYgbCu9J3' || (newData.child('isVerified').val() === data.child('isVerified').val() && newData.child('verifiedAt').val() === data.child('verifiedAt').val() && newData.child('verifiedBy').val() === data.child('verifiedBy').val())",
+        "isVerified": {
+          ".validate": "newData.isBoolean() && (auth.uid === 'UI28ofvzB7cjNJvCG0DvYgbCu9J3' || newData.val() === data.val())"
+        },
+        "verifiedAt": {
+          ".validate": "auth.uid === 'UI28ofvzB7cjNJvCG0DvYgbCu9J3' || newData.val() === data.val()"
+        },
+        "verifiedBy": {
+          ".validate": "auth.uid === 'UI28ofvzB7cjNJvCG0DvYgbCu9J3' || newData.val() === data.val()"
+        }
       }
     },
     "calls": {

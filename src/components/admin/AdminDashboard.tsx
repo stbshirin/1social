@@ -9,6 +9,10 @@ import {
   Trash2,
   PhoneCall,
   Search,
+  BadgeCheck,
+  XCircle,
+  X,
+  Lock,
 } from 'lucide-react';
 import {
   collection,
@@ -20,12 +24,18 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { db } from '../../firebase/config';
-import { useAuth } from '../../context/AuthContext';
+import { useAuth, MAIN_ADMIN_UID } from '../../context/AuthContext';
 import { UserProfile, Post, ReportItem, CallSession } from '../../types';
-import { getSocialUsersCollection, updateSocialUserProfile } from '../../services/userService';
+import {
+  getSocialUsersCollection,
+  updateSocialUserProfile,
+  setUserVerifiedStatus,
+} from '../../services/userService';
+import { VerifiedBadge } from '../common/VerifiedBadge';
 
 export const AdminDashboard: React.FC = () => {
   const { isAdmin, currentUser } = useAuth();
+  const isMainAdmin = currentUser?.uid === MAIN_ADMIN_UID;
   const [activeTab, setActiveTab] = useState<'users' | 'posts' | 'reports' | 'calls'>('users');
 
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -35,6 +45,17 @@ export const AdminDashboard: React.FC = () => {
 
   const [userSearch, setUserSearch] = useState('');
   const [postSearch, setPostSearch] = useState('');
+
+  // Verified Badge Confirmation Modal & Feedback State (Main Admin Only)
+  const [verifyConfirmTarget, setVerifyConfirmTarget] = useState<{
+    user: UserProfile;
+    nextVerified: boolean;
+  } | null>(null);
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [verifyFeedback, setVerifyFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
   // Real-time listener for socialApp users
   useEffect(() => {
@@ -116,6 +137,30 @@ export const AdminDashboard: React.FC = () => {
       });
     } catch (e) {
       console.warn('Error updating suspension:', e);
+    }
+  };
+
+  const handleConfirmVerifyAction = async () => {
+    if (!verifyConfirmTarget || !currentUser || !isMainAdmin) return;
+    const { user: targetUser, nextVerified } = verifyConfirmTarget;
+    setVerifyLoading(true);
+    setVerifyFeedback(null);
+    try {
+      await setUserVerifiedStatus(targetUser.uid, nextVerified, currentUser.uid);
+      setVerifyFeedback({
+        type: 'success',
+        message: nextVerified
+          ? `Blue Verified Badge granted to ${targetUser.displayName} (@${targetUser.username}).`
+          : `Blue Verified Badge removed from ${targetUser.displayName} (@${targetUser.username}).`,
+      });
+      setVerifyConfirmTarget(null);
+    } catch (err: any) {
+      setVerifyFeedback({
+        type: 'error',
+        message: err?.message || 'Failed to update verified badge status.',
+      });
+    } finally {
+      setVerifyLoading(false);
     }
   };
 
@@ -245,74 +290,188 @@ export const AdminDashboard: React.FC = () => {
       {/* Users Tab Table */}
       {activeTab === 'users' && (
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl overflow-hidden shadow-sm">
-          <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">Registered Users</h3>
-            <div className="relative w-60">
+          <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                Registered Users & Verification Control
+              </h3>
+              <p className="text-[11px] text-slate-400">
+                {isMainAdmin
+                  ? 'Main Admin authority active: You can grant or remove Blue Verified Badges for any account.'
+                  : 'Only Main Admin (UID: UI28ofvzB7cjNJvCG0DvYgbCu9J3) can grant or remove Blue Verified Badges.'}
+              </p>
+            </div>
+            <div className="relative w-full sm:w-64">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
-                placeholder="Search user..."
+                placeholder="Search name, @username, email or UID..."
                 value={userSearch}
                 onChange={(e) => setUserSearch(e.target.value)}
-                className="w-full pl-8 pr-3 py-1 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none"
+                className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none"
               />
             </div>
           </div>
+
+          {verifyFeedback && (
+            <div
+              className={`mx-4 mt-3 px-4 py-2.5 rounded-2xl text-xs font-semibold flex items-center justify-between ${
+                verifyFeedback.type === 'success'
+                  ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20'
+                  : 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20'
+              }`}
+            >
+              <span>{verifyFeedback.message}</span>
+              <button
+                type="button"
+                onClick={() => setVerifyFeedback(null)}
+                className="ml-3 opacity-70 hover:opacity-100 cursor-pointer"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-400 uppercase border-b border-slate-200 dark:border-slate-800 font-semibold">
                 <tr>
                   <th className="p-4">User</th>
-                  <th className="p-4">Role</th>
-                  <th className="p-4">Status</th>
+                  <th className="p-4">Firebase UID</th>
+                  <th className="p-4">Role & Status</th>
+                  <th className="p-4">Verified Status</th>
                   <th className="p-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
                 {users
-                  .filter((u) => u.displayName?.toLowerCase().includes(userSearch.toLowerCase()) || u.email?.toLowerCase().includes(userSearch.toLowerCase()))
-                  .map((u) => (
-                    <tr key={u.uid} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
-                      <td className="p-4 flex items-center gap-3">
-                        <img
-                          src={u.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.uid}`}
-                          alt={u.displayName}
-                          className="w-8 h-8 rounded-full object-cover"
-                        />
-                        <div>
-                          <p className="font-bold text-slate-900 dark:text-white">{u.displayName}</p>
-                          <p className="text-[10px] text-slate-400">@{u.username} • {u.email}</p>
-                        </div>
-                      </td>
-                      <td className="p-4">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          u.role === 'admin' ? 'bg-amber-500/10 text-amber-500' : 'bg-slate-100 dark:bg-slate-800 text-slate-400'
-                        }`}>
-                          {u.role || 'user'}
-                        </span>
-                      </td>
-                      <td className="p-4">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          u.isSuspended ? 'bg-rose-500/10 text-rose-500' : 'bg-emerald-500/10 text-emerald-500'
-                        }`}>
-                          {u.isSuspended ? 'Suspended' : 'Active'}
-                        </span>
-                      </td>
-                      <td className="p-4 text-right">
-                        <button
-                          onClick={() => toggleSuspendUser(u)}
-                          className={`px-3 py-1 rounded-xl font-semibold transition-colors cursor-pointer ${
-                            u.isSuspended
-                              ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                              : 'bg-rose-50 dark:bg-rose-950/30 text-rose-600 hover:bg-rose-100'
-                          }`}
-                        >
-                          {u.isSuspended ? 'Reactivate' : 'Suspend'}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  .filter((u) => {
+                    const q = userSearch.toLowerCase().trim();
+                    if (!q) return true;
+                    return (
+                      u.displayName?.toLowerCase().includes(q) ||
+                      u.username?.toLowerCase().includes(q) ||
+                      u.email?.toLowerCase().includes(q) ||
+                      u.uid?.toLowerCase().includes(q)
+                    );
+                  })
+                  .map((u) => {
+                    const isVerifiedUser = u.isVerified === true;
+                    return (
+                      <tr key={u.uid} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                        <td className="p-4">
+                          <div className="flex items-center gap-3">
+                            <img
+                              src={u.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.uid}`}
+                              alt={u.displayName}
+                              className="w-9 h-9 rounded-full object-cover shrink-0 border border-slate-200 dark:border-slate-700"
+                            />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <p className="font-bold text-slate-900 dark:text-white truncate">
+                                  {u.displayName}
+                                </p>
+                                <VerifiedBadge user={u} size="xs" />
+                              </div>
+                              <p className="text-[10px] text-slate-400 truncate">
+                                @{u.username} {u.email ? `• ${u.email}` : ''}
+                              </p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="p-4">
+                          <code className="text-[10px] font-mono px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 select-all break-all">
+                            {u.uid}
+                          </code>
+                        </td>
+                        <td className="p-4">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                u.role === 'admin'
+                                  ? 'bg-amber-500/10 text-amber-500'
+                                  : 'bg-slate-100 dark:bg-slate-800 text-slate-400'
+                              }`}
+                            >
+                              {u.role || 'user'}
+                            </span>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                u.isSuspended
+                                  ? 'bg-rose-500/10 text-rose-500'
+                                  : 'bg-emerald-500/10 text-emerald-500'
+                              }`}
+                            >
+                              {u.isSuspended ? 'Suspended' : 'Active'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="p-4">
+                          {isVerifiedUser ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/10 text-sky-500 border border-sky-500/20">
+                              <BadgeCheck size={12} />
+                              <span>Verified</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-400">
+                              Not Verified
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-4 text-right">
+                          <div className="inline-flex items-center justify-end gap-2 flex-wrap">
+                            {isMainAdmin ? (
+                              isVerifiedUser ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setVerifyConfirmTarget({ user: u, nextVerified: false })
+                                  }
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl font-semibold bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-950/50 transition-colors cursor-pointer"
+                                  title="Remove Blue Verified Badge"
+                                >
+                                  <XCircle size={13} />
+                                  <span>Remove Verified Badge</span>
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setVerifyConfirmTarget({ user: u, nextVerified: true })
+                                  }
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl font-semibold bg-sky-600 hover:bg-sky-500 text-white shadow-xs transition-colors cursor-pointer"
+                                  title="Give Blue Verified Badge"
+                                >
+                                  <BadgeCheck size={13} />
+                                  <span>Give Verified Badge</span>
+                                </button>
+                              )
+                            ) : (
+                              <span
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-400 text-[10px] font-semibold"
+                                title="Only Main Admin can modify Verified Badges"
+                              >
+                                <Lock size={11} />
+                                <span>Main Admin Only</span>
+                              </span>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => toggleSuspendUser(u)}
+                              className={`px-3 py-1.5 rounded-xl font-semibold transition-colors cursor-pointer ${
+                                u.isSuspended
+                                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                                  : 'bg-rose-50 dark:bg-rose-950/30 text-rose-600 hover:bg-rose-100'
+                              }`}
+                            >
+                              {u.isSuspended ? 'Reactivate' : 'Suspend'}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
@@ -440,6 +599,98 @@ export const AdminDashboard: React.FC = () => {
                 </div>
               ))
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal for Grant / Remove Blue Verified Badge (Main Admin Only) */}
+      {verifyConfirmTarget && isMainAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 animate-in fade-in duration-150">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2.5">
+                <div
+                  className={`p-2 rounded-xl ${
+                    verifyConfirmTarget.nextVerified
+                      ? 'bg-sky-500/10 text-sky-500'
+                      : 'bg-amber-500/10 text-amber-500'
+                  }`}
+                >
+                  <BadgeCheck size={20} />
+                </div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  {verifyConfirmTarget.nextVerified
+                    ? 'Give Blue Verified Badge'
+                    : 'Remove Blue Verified Badge'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                disabled={verifyLoading}
+                onClick={() => setVerifyConfirmTarget(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 flex items-center gap-3 mb-4">
+              <img
+                src={
+                  verifyConfirmTarget.user.photoURL ||
+                  `https://api.dicebear.com/7.x/avataaars/svg?seed=${verifyConfirmTarget.user.uid}`
+                }
+                alt={verifyConfirmTarget.user.displayName}
+                className="w-11 h-11 rounded-full object-cover border border-slate-200 dark:border-slate-700"
+              />
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <p className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                    {verifyConfirmTarget.user.displayName}
+                  </p>
+                  <VerifiedBadge user={verifyConfirmTarget.user} size="xs" />
+                </div>
+                <p className="text-xs text-slate-400 truncate">
+                  @{verifyConfirmTarget.user.username}
+                </p>
+                <p className="text-[10px] font-mono text-slate-400 truncate">
+                  UID: {verifyConfirmTarget.user.uid}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed mb-5">
+              {verifyConfirmTarget.nextVerified
+                ? 'Are you sure you want to grant the Blue Verified Badge to this user? It will appear across their Profile, Feed Posts, Comments, Messenger, and Search results without granting Admin permissions.'
+                : 'Are you sure you want to remove the Blue Verified Badge from this user? Their verified badge will immediately disappear across the entire platform.'}
+            </p>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={verifyLoading}
+                onClick={() => setVerifyConfirmTarget(null)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={verifyLoading}
+                onClick={handleConfirmVerifyAction}
+                className={`px-5 py-2 rounded-xl text-xs font-semibold text-white shadow-md cursor-pointer disabled:opacity-50 ${
+                  verifyConfirmTarget.nextVerified
+                    ? 'bg-sky-600 hover:bg-sky-500'
+                    : 'bg-rose-600 hover:bg-rose-500'
+                }`}
+              >
+                {verifyLoading
+                  ? 'Updating...'
+                  : verifyConfirmTarget.nextVerified
+                  ? 'Confirm & Verify User'
+                  : 'Confirm Removal'}
+              </button>
+            </div>
           </div>
         </div>
       )}

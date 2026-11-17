@@ -11,6 +11,9 @@ export interface UserProfile {
   website?: string;
   role: 'user' | 'admin';
   adminBadgeVisibility?: 'public' | 'followers' | 'only_me';
+  isVerified?: boolean;
+  verifiedAt?: string | null;
+  verifiedBy?: string | null;
   isOnline?: boolean;
   lastSeen?: string | number;
   isSuspended?: boolean;

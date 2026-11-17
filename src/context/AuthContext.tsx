@@ -32,6 +32,7 @@ interface AuthContextType {
   currentUser: User | null;
   userProfile: UserProfile | null;
   isAdmin: boolean;
+  isMainAdmin: boolean;
   loading: boolean;
   tokenServiceDisabled: boolean;
   signUpWithEmail: (email: string, pass: string, name: string, username: string) => Promise<void>;
@@ -83,6 +84,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       location: '',
       website: '',
       role: isUserAdmin ? 'admin' : 'user',
+      isVerified: false,
       isSuspended: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -153,7 +155,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               if (snap.exists()) {
                 const data = snap.data() as UserProfile;
                 const isUserAdmin =
-                  user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase() || data.role === 'admin';
+                  user.uid === MAIN_ADMIN_UID ||
+                  user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase() ||
+                  data.role === 'admin';
                 setUserProfile(data);
                 setIsAdmin(isUserAdmin);
               }
@@ -231,8 +235,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateUserProfile = async (data: Partial<UserProfile>) => {
     if (!currentUser || !userProfile) return;
+    // Strip privileged fields so self-service updates can never alter verified or admin state
+    const {
+      isVerified: _ignoreVerified,
+      verifiedAt: _ignoreVerifiedAt,
+      verifiedBy: _ignoreVerifiedBy,
+      role: _ignoreRole,
+      isSuspended: _ignoreSuspended,
+      ...safeProfileData
+    } = data;
+
     try {
-      await updateSocialUserProfile(currentUser.uid, data);
+      await updateSocialUserProfile(currentUser.uid, safeProfileData);
 
       // Also sync to Realtime Database users/${uid} as required for Privacy & Media
       try {
@@ -253,10 +267,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.warn('RTDB updateUserProfile sync notice:', rtdbErr);
       }
 
-      setUserProfile((prev) => (prev ? { ...prev, ...data } : null));
+      setUserProfile((prev) => (prev ? { ...prev, ...safeProfileData } : null));
     } catch (error) {
       console.warn('updateUserProfile error:', error);
-      setUserProfile((prev) => (prev ? { ...prev, ...data } : null));
+      setUserProfile((prev) => (prev ? { ...prev, ...safeProfileData } : null));
     }
   };
 
@@ -266,6 +280,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         currentUser,
         userProfile,
         isAdmin,
+        isMainAdmin: currentUser?.uid === MAIN_ADMIN_UID,
         loading,
         tokenServiceDisabled,
         signUpWithEmail,

@@ -39,8 +39,10 @@ export function getSocialUsersCollection(): CollectionReference {
  * Creates a brand new separate socialApp user profile without touching any legacy user data
  */
 export async function createSocialUserProfile(uid: string, profileData: UserProfile): Promise<void> {
+  const { verifiedAt: _vAt, verifiedBy: _vBy, ...safeInput } = profileData;
   const payload = {
-    ...profileData,
+    ...safeInput,
+    isVerified: false,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -152,4 +154,50 @@ export async function fetchSocialUserProfile(uid: string): Promise<UserProfile |
   }
 
   return null;
+}
+
+const MAIN_ADMIN_UID = 'UI28ofvzB7cjNJvCG0DvYgbCu9J3';
+
+/**
+ * Grants or removes the Blue Verified Badge for a target user.
+ * Strictly enforced for Main Admin UID UI28ofvzB7cjNJvCG0DvYgbCu9J3 (both client & Firestore rules).
+ */
+export async function setUserVerifiedStatus(
+  targetUid: string,
+  isVerified: boolean,
+  adminUid?: string
+): Promise<void> {
+  if (!adminUid || adminUid !== MAIN_ADMIN_UID) {
+    throw new Error('Unauthorized: Only the Main Admin can grant or remove the Verified Badge.');
+  }
+  if (!targetUid) {
+    throw new Error('Target user UID is required.');
+  }
+
+  const nowIso = new Date().toISOString();
+  const payload = isVerified
+    ? {
+        isVerified: true,
+        verifiedAt: nowIso,
+        verifiedBy: adminUid,
+        updatedAt: nowIso,
+      }
+    : {
+        isVerified: false,
+        verifiedAt: null,
+        verifiedBy: null,
+        updatedAt: nowIso,
+      };
+
+  // Primary authoritative update in socialApp_users/{uid}
+  const directRef = getSocialUserDocRef(targetUid);
+  await updateDoc(directRef, payload);
+
+  // Best-effort sync to hierarchical socialApp/app/users/{uid}
+  try {
+    const subRef = getSocialUserSubDocRef(targetUid);
+    await setDoc(subRef, payload, { merge: true });
+  } catch {
+    // Non-blocking if secondary subdoc hasn't been initialized
+  }
 }

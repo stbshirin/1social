@@ -44,6 +44,7 @@ import { getSocialUsersCollection } from '../../services/userService';
 import { uploadChatAttachment } from '../../services/storageService';
 import { usePresence } from '../../services/presenceService';
 import { AdminBadge } from '../common/AdminBadge';
+import { VerifiedBadge } from '../common/VerifiedBadge';
 import { subscribeToUserCallHistory, formatCallDuration } from '../../services/callHistoryService';
 
 interface MessengerViewProps {
@@ -1109,7 +1110,10 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
                         className="w-9 h-9 rounded-full object-cover"
                       />
                       <div>
-                        <p className="text-xs font-bold text-slate-900 dark:text-white">{u.displayName}</p>
+                        <div className="flex items-center gap-1">
+                          <p className="text-xs font-bold text-slate-900 dark:text-white">{u.displayName}</p>
+                          <VerifiedBadge user={u} size="xs" />
+                        </div>
                         <p className="text-[11px] text-slate-400">@{u.username}</p>
                       </div>
                     </div>
@@ -1189,6 +1193,7 @@ const MessengerChatHeader: React.FC<MessengerChatHeaderProps> = ({
             <h3 className="text-sm font-bold text-slate-900 dark:text-white leading-tight">
               {selectedConversation.isGroup ? selectedConversation.groupName : otherParticipant?.displayName}
             </h3>
+            {otherParticipant && <VerifiedBadge user={{ uid: otherParticipant.uid }} size="xs" />}
             {otherParticipant && <AdminBadge user={{ uid: otherParticipant.uid }} size="xs" />}
           </div>
           {!selectedConversation.isGroup && (
@@ -1278,6 +1283,7 @@ const MessengerConversationItem: React.FC<MessengerConversationItemProps> = ({
             <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
               {title}
             </h4>
+            {other && <VerifiedBadge user={{ uid: other.uid }} size="xs" />}
             {other && <AdminBadge user={{ uid: other.uid }} size="xs" />}
           </div>
           <span className="text-[10px] text-slate-400 shrink-0">
@@ -1383,6 +1389,7 @@ const MessengerCallItem: React.FC<MessengerCallItemProps> = ({
             <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
               {otherName || 'Unknown User'}
             </h4>
+            <VerifiedBadge user={{ uid: otherUid }} size="xs" />
             <AdminBadge user={{ uid: otherUid }} size="xs" />
           </div>
 

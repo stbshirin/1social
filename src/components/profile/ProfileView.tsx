@@ -39,6 +39,7 @@ import { getSocialUserDocRef, fetchSocialUserProfile } from '../../services/user
 import { uploadUserProfileImage } from '../../services/storageService';
 import { usePresence } from '../../services/presenceService';
 import { AdminBadge } from '../common/AdminBadge';
+import { VerifiedBadge } from '../common/VerifiedBadge';
 
 interface ProfileViewProps {
   targetUserId?: string | null;
@@ -626,9 +627,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         {/* Name, Presence Text, and Admin Badge */}
         <div className="space-y-2 text-center sm:text-left">
           <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3">
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
-              {profile.displayName}
-            </h1>
+            <div className="flex items-center justify-center sm:justify-start gap-1.5">
+              <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+                {profile.displayName}
+              </h1>
+              <VerifiedBadge user={profile} size="md" />
+            </div>
             <span className="text-xs text-slate-400 font-mono">@{profile.username}</span>
             <AdminBadge user={profile} isFollower={isFollowing} size="sm" />
           </div>
@@ -819,9 +823,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                       className="w-10 h-10 rounded-full object-cover border border-slate-200 dark:border-slate-700"
                     />
                     <div className="truncate">
-                      <p className="text-sm font-bold text-slate-900 dark:text-white truncate">
-                        {u.displayName}
-                      </p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                          {u.displayName}
+                        </p>
+                        <VerifiedBadge user={u} size="xs" />
+                      </div>
                       <p className="text-xs text-slate-400 truncate">@{u.username}</p>
                     </div>
                   </div>

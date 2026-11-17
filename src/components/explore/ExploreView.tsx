@@ -8,6 +8,7 @@ import { UserProfile, Follow } from '../../types';
 import { getSocialUsersCollection } from '../../services/userService';
 import { usePresence } from '../../services/presenceService';
 import { AdminBadge } from '../common/AdminBadge';
+import { VerifiedBadge } from '../common/VerifiedBadge';
 
 interface ExploreViewProps {
   searchQuery: string;
@@ -196,6 +197,7 @@ const ExploreUserCard: React.FC<ExploreUserCardProps> = ({
               <h4 className="text-sm font-bold text-slate-900 dark:text-white truncate">
                 {user.displayName}
               </h4>
+              <VerifiedBadge user={user} size="xs" />
               <AdminBadge user={user} isFollower={isFollowing} size="xs" />
             </div>
             <div className="flex items-center gap-1 text-xs text-slate-400">

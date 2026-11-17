@@ -29,6 +29,7 @@ import { useAuth } from '../../context/AuthContext';
 import { Post, Comment, Like } from '../../types';
 import { handleFirestoreError, OperationType } from '../../firebase/errorHandler';
 import { AdminBadge } from '../common/AdminBadge';
+import { VerifiedBadge } from '../common/VerifiedBadge';
 
 interface PostCardProps {
   post: Post;
@@ -292,6 +293,7 @@ export const PostCard: React.FC<PostCardProps> = ({
               <h4 className="text-sm font-bold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
                 {post.authorName}
               </h4>
+              <VerifiedBadge user={{ uid: post.authorId }} size="xs" />
               <AdminBadge user={{ uid: post.authorId }} size="xs" />
             </div>
             <div className="flex items-center gap-1.5 text-xs text-slate-400">
@@ -498,6 +500,7 @@ export const PostCard: React.FC<PostCardProps> = ({
                         <span className="text-xs font-bold text-slate-900 dark:text-slate-100">
                           {c.authorName}
                         </span>
+                        <VerifiedBadge user={{ uid: c.authorId }} size="xs" />
                         <AdminBadge user={{ uid: c.authorId }} size="xs" />
                         <span className="text-[10px] text-slate-400">@{c.authorUsername}</span>
                       </div>

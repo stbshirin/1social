@@ -8,6 +8,7 @@ import { UserProfile, Follow } from '../../types';
 
 import { getSocialUsersCollection } from '../../services/userService';
 import { usePresence } from '../../services/presenceService';
+import { VerifiedBadge } from '../common/VerifiedBadge';
 
 interface RightSidebarProps {
   onStartChat: (user: UserProfile) => void;
@@ -42,9 +43,12 @@ const QuickConnectUserRow: React.FC<{
           />
         </div>
         <div className="truncate">
-          <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
-            {user.displayName}
-          </p>
+          <div className="flex items-center gap-1">
+            <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
+              {user.displayName}
+            </p>
+            <VerifiedBadge user={user} size="xs" />
+          </div>
           <p className="text-[11px] text-slate-400 truncate">
             {presence.isOnline ? <span className="text-emerald-500 font-medium">Online</span> : `@${user.username}`}
           </p>
@@ -223,9 +227,12 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ onStartChat, onSelec
                     className="w-8 h-8 rounded-full object-cover shrink-0"
                   />
                   <div className="truncate">
-                    <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
-                      {u.displayName}
-                    </p>
+                    <div className="flex items-center gap-1">
+                      <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
+                        {u.displayName}
+                      </p>
+                      <VerifiedBadge user={u} size="xs" />
+                    </div>
                     <p className="text-[10px] text-slate-400 truncate">@{u.username}</p>
                   </div>
                 </div>

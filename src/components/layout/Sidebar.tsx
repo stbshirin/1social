@@ -10,6 +10,7 @@ import {
   PlusCircle,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { VerifiedBadge } from '../common/VerifiedBadge';
 
 interface SidebarProps {
   activeTab: string;
@@ -96,9 +97,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
               className="w-10 h-10 rounded-full object-cover border border-slate-200 dark:border-slate-700 shrink-0"
             />
             <div className="truncate">
-              <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
-                {userProfile?.displayName}
-              </p>
+              <div className="flex items-center gap-1">
+                <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                  {userProfile?.displayName}
+                </p>
+                <VerifiedBadge user={userProfile} size="xs" />
+              </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
                 @{userProfile?.username}
               </p>

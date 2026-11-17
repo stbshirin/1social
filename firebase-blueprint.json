@@ -15,6 +15,9 @@
         "location": { "type": "string", "maxLength": 100 },
         "website": { "type": "string", "maxLength": 200 },
         "role": { "type": "string", "enum": ["user", "admin"] },
+        "isVerified": { "type": "boolean" },
+        "verifiedAt": { "type": ["string", "null"] },
+        "verifiedBy": { "type": ["string", "null"], "maxLength": 128 },
         "isSuspended": { "type": "boolean" },
         "createdAt": { "type": "string" },
         "updatedAt": { "type": "string" }
