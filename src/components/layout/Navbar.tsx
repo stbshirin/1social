@@ -1,12 +1,12 @@
-import React from 'react';
-import { Sparkles, Bell, MessageSquare, Shield, Search } from 'lucide-react';
+import React, { useState } from 'react';
+import { Bell, LogOut, Shield, Search } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { VerifiedBadge } from '../common/VerifiedBadge';
 
 interface NavbarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
-  unreadMessagesCount: number;
+  unreadMessagesCount?: number;
   unreadNotificationsCount: number;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
@@ -15,12 +15,24 @@ interface NavbarProps {
 export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
   setActiveTab,
-  unreadMessagesCount,
   unreadNotificationsCount,
   searchQuery,
   setSearchQuery,
 }) => {
-  const { userProfile, isAdmin } = useAuth();
+  const { userProfile, isAdmin, logOut } = useAuth();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  const handleLogOut = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
+    try {
+      await logOut();
+    } catch (err) {
+      console.error('Logout error:', err);
+    } finally {
+      setIsLoggingOut(false);
+    }
+  };
 
   return (
     <header className="sticky top-0 z-40 w-full border-b backdrop-blur-md transition-colors bg-white/80 dark:bg-slate-900/80 border-slate-200 dark:border-slate-800">
@@ -92,22 +104,19 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
           </button>
 
-          {/* Messenger button */}
+          {/* Log Out button (replaces Live Chat / Messenger shortcut in top Navbar) */}
           <button
-            onClick={() => setActiveTab('messenger')}
-            className={`p-2 rounded-full relative transition-colors cursor-pointer ${
-              activeTab === 'messenger'
-                ? 'bg-indigo-600 text-white'
-                : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-            }`}
-            title="Messenger"
+            type="button"
+            onClick={handleLogOut}
+            disabled={isLoggingOut}
+            className="flex items-center gap-1.5 p-2 sm:px-3 sm:py-1.5 rounded-full text-slate-600 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer disabled:opacity-50"
+            title="Log Out"
+            aria-label="Log Out"
           >
-            <MessageSquare size={20} />
-            {unreadMessagesCount > 0 && (
-              <span className="absolute top-1 right-1 w-4 h-4 bg-indigo-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
-                {unreadMessagesCount > 9 ? '9+' : unreadMessagesCount}
-              </span>
-            )}
+            <LogOut size={20} />
+            <span className="text-xs font-semibold hidden sm:inline">
+              {isLoggingOut ? 'Logging out...' : 'Log Out'}
+            </span>
           </button>
 
           {/* User Profile Avatar Pill */}
