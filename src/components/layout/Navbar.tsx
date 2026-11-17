@@ -1,6 +1,7 @@
 import React from 'react';
 import { Sparkles, Bell, MessageSquare, Shield, Search } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { VerifiedBadge } from '../common/VerifiedBadge';
 
 interface NavbarProps {
   activeTab: string;
@@ -122,6 +123,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span className="text-sm font-semibold text-slate-800 dark:text-slate-200 hidden md:inline">
               {userProfile?.displayName?.split(' ')[0] || 'Profile'}
             </span>
+            <VerifiedBadge user={userProfile} size="xs" />
           </button>
         </div>
       </div>

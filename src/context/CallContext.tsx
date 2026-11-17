@@ -24,6 +24,8 @@ import { CallSession, UserProfile } from '../types';
 import { ICE_SERVERS, getMediaStream, stopMediaStream } from '../services/webrtc';
 import { soundEffects } from '../services/soundEffects';
 import { formatCallDuration, recordCallHistory } from '../services/callHistoryService';
+import { fetchSocialUserProfile } from '../services/userService';
+import { resolveSafePhotoUrl } from '../utils/callIdentity';
 
 interface CallContextType {
   activeCall: CallSession | null;
@@ -217,14 +219,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           })
         );
 
+        const targetCalleeId = cur.receiverId || cur.calleeId;
         recordCallHistory({
           callId: cur.id,
           callerId: cur.callerId,
           callerName: cur.callerName,
-          callerPhoto: cur.callerPhoto,
-          calleeId: cur.calleeId,
+          callerPhoto: resolveSafePhotoUrl(cur.callerPhoto, cur.callerId),
+          calleeId: targetCalleeId,
           calleeName: cur.calleeName,
-          calleePhoto: cur.calleePhoto,
+          calleePhoto: resolveSafePhotoUrl(cur.calleePhoto, targetCalleeId),
           type: cur.type,
           status: exitStatus,
           duration: dur,
@@ -401,10 +404,13 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       userProfile?.username ||
       currentUser.email?.split('@')[0] ||
       `user_${currentUser.uid.slice(0, 5)}`;
-    const myPhoto =
-      userProfile?.photoURL ||
-      currentUser.photoURL ||
-      `https://api.dicebear.com/7.x/avataaars/svg?seed=${currentUser.uid}`;
+    const myPhoto = resolveSafePhotoUrl(
+      userProfile?.photoURL || currentUser.photoURL,
+      currentUser.uid
+    );
+    const initialCalleeName = callee.displayName || '1 social Member';
+    const initialCalleeUsername = callee.username || 'user';
+    const initialCalleePhoto = resolveSafePhotoUrl(callee.photoURL, targetCalleeUid);
 
     const callDocRef = doc(collection(db, 'calls'));
     const callId = callDocRef.id;
@@ -420,11 +426,10 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       callerUsername: myUsername,
       callerPhoto: myPhoto,
       calleeId: targetCalleeUid,
-      calleeName: callee.displayName || '1 social Member',
-      calleeUsername: callee.username || 'user',
-      calleePhoto:
-        callee.photoURL ||
-        `https://api.dicebear.com/7.x/avataaars/svg?seed=${targetCalleeUid}`,
+      receiverId: targetCalleeUid,
+      calleeName: initialCalleeName,
+      calleeUsername: initialCalleeUsername,
+      calleePhoto: initialCalleePhoto,
       type,
       status: 'ringing',
       createdAt: new Date().toISOString(),
@@ -433,6 +438,37 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setActiveCall(initialCallData);
     activeCallRef.current = initialCallData;
     pendingCandidatesRef.current = [];
+
+    // Non-blocking fresh profile fetch strictly keyed by callerId & receiverId
+    const freshProfilesPromise = Promise.all([
+      fetchSocialUserProfile(currentUser.uid).catch(() => null),
+      fetchSocialUserProfile(targetCalleeUid).catch(() => null),
+    ]).then(([freshCaller, freshCallee]) => {
+      if (isCleaningUpRef.current || activeCallRef.current?.id !== callId) return;
+      const resolvedCallerPhoto = resolveSafePhotoUrl(
+        freshCaller?.photoURL || myPhoto,
+        currentUser.uid
+      );
+      const resolvedCalleePhoto = resolveSafePhotoUrl(
+        freshCallee?.photoURL || initialCalleePhoto,
+        targetCalleeUid
+      );
+      const patch: Partial<CallSession> = {
+        callerName: freshCaller?.displayName || myName,
+        callerUsername: freshCaller?.username || myUsername,
+        callerPhoto: resolvedCallerPhoto,
+        calleeName: freshCallee?.displayName || initialCalleeName,
+        calleeUsername: freshCallee?.username || initialCalleeUsername,
+        calleePhoto: resolvedCalleePhoto,
+      };
+      setActiveCall((prev) => {
+        if (!prev || prev.id !== callId) return prev;
+        const next = { ...prev, ...patch };
+        activeCallRef.current = next;
+        return next;
+      });
+      return patch;
+    });
 
     try {
       // STEP 2: Acquire Media Stream with Graceful Fallback
@@ -550,19 +586,38 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setActiveCall(fullCallData);
       activeCallRef.current = fullCallData;
 
-      // STEP 4: Write Offer to Firestore calls collection
-      await setDoc(callDocRef, {
+      // STEP 4: Write Offer to Firestore calls collection (incorporating any already-resolved fresh profiles)
+      const latestBeforeWrite = activeCallRef.current?.id === callId ? activeCallRef.current : fullCallData;
+      const callDocPayload: CallSession = {
         ...fullCallData,
+        callerName: latestBeforeWrite.callerName,
+        callerUsername: latestBeforeWrite.callerUsername,
+        callerPhoto: latestBeforeWrite.callerPhoto,
+        calleeName: latestBeforeWrite.calleeName,
+        calleeUsername: latestBeforeWrite.calleeUsername,
+        calleePhoto: latestBeforeWrite.calleePhoto,
+      };
+      await setDoc(callDocRef, {
+        ...callDocPayload,
         createdAt: serverTimestamp(),
       });
+
+      // If fresh profiles finish resolving after initial offer write, sync them to Firestore call doc
+      freshProfilesPromise
+        .then((patch) => {
+          if (patch && !isCleaningUpRef.current && activeCallRef.current?.id === callId) {
+            updateDoc(callDocRef, patch).catch(() => {});
+          }
+        })
+        .catch(() => {});
 
       // Secondary non-blocking write to Realtime Database
       safeRtdbOp(() => {
         const rtdbCallRef = rtdbRef(rtdb, `calls/${callId}`);
         const rtdbCalleeCallRef = rtdbRef(rtdb, `userCalls/${targetCalleeUid}/${callId}`);
         return Promise.all([
-          rtdbSet(rtdbCallRef, { ...fullCallData, createdAt: Date.now() }),
-          rtdbSet(rtdbCalleeCallRef, { ...fullCallData, createdAt: Date.now() }),
+          rtdbSet(rtdbCallRef, { ...callDocPayload, createdAt: Date.now() }),
+          rtdbSet(rtdbCalleeCallRef, { ...callDocPayload, createdAt: Date.now() }),
         ]);
       });
       safeRtdbOp(() => rtdbOnDisconnect(rtdbRef(rtdb, `calls/${callId}/status`)).set('ended'));
@@ -630,14 +685,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
             ? Math.max(0, Math.floor((authEndedAt - authStartedAt) / 1000))
             : 0;
 
+        const latestSession = activeCallRef.current?.id === callId ? activeCallRef.current : fullCallData;
         await recordCallHistory({
           callId,
           callerId: currentUser.uid,
-          callerName: myName,
-          callerPhoto: myPhoto,
+          callerName: latestSession.callerName || myName,
+          callerPhoto: resolveSafePhotoUrl(latestSession.callerPhoto, currentUser.uid),
           calleeId: targetCalleeUid,
-          calleeName: callee.displayName || '1 social Member',
-          calleePhoto: callee.photoURL,
+          calleeName: latestSession.calleeName || initialCalleeName,
+          calleePhoto: resolveSafePhotoUrl(latestSession.calleePhoto, targetCalleeUid),
           type,
           status,
           duration: finalDuration,
@@ -736,6 +792,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     soundEffects.stopRingtone();
     const callToAccept = incomingCall;
+    const resolvedReceiverId = callToAccept.receiverId || callToAccept.calleeId || currentUser.uid;
 
     // STEP 1: IMMEDIATELY TRANSITION TO CONNECTED ACTIVE CALL SCREEN (0ms latency!)
     // Duration stays at 00:00 until WebRTC connectionState reaches 'connected'
@@ -744,6 +801,14 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const acceptedCallData: CallSession = {
       ...callToAccept,
+      receiverId: resolvedReceiverId,
+      callerPhoto: resolveSafePhotoUrl(callToAccept.callerPhoto, callToAccept.callerId),
+      calleeName: userProfile?.displayName || callToAccept.calleeName || '1 social Member',
+      calleeUsername: userProfile?.username || callToAccept.calleeUsername || 'user',
+      calleePhoto: resolveSafePhotoUrl(
+        userProfile?.photoURL || currentUser.photoURL || callToAccept.calleePhoto,
+        resolvedReceiverId
+      ),
       status: 'accepted',
       startedAt: null,
       connectedAt: null,
@@ -752,6 +817,36 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     activeCallRef.current = acceptedCallData;
     setIncomingCall(null);
     pendingCandidatesRef.current = [];
+
+    // Non-blocking refresh of caller & receiver profiles strictly by UID
+    Promise.all([
+      fetchSocialUserProfile(callToAccept.callerId).catch(() => null),
+      fetchSocialUserProfile(resolvedReceiverId).catch(() => null),
+    ])
+      .then(([freshCaller, freshCallee]) => {
+        if (isCleaningUpRef.current || activeCallRef.current?.id !== callToAccept.id) return;
+        setActiveCall((prev) => {
+          if (!prev || prev.id !== callToAccept.id) return prev;
+          const next: CallSession = {
+            ...prev,
+            callerName: freshCaller?.displayName || prev.callerName,
+            callerUsername: freshCaller?.username || prev.callerUsername,
+            callerPhoto: resolveSafePhotoUrl(
+              freshCaller?.photoURL || prev.callerPhoto,
+              callToAccept.callerId
+            ),
+            calleeName: freshCallee?.displayName || prev.calleeName,
+            calleeUsername: freshCallee?.username || prev.calleeUsername,
+            calleePhoto: resolveSafePhotoUrl(
+              freshCallee?.photoURL || prev.calleePhoto,
+              resolvedReceiverId
+            ),
+          };
+          activeCallRef.current = next;
+          return next;
+        });
+      })
+      .catch(() => {});
 
     try {
       // STEP 2: Acquire Media Stream with Fallback
@@ -918,14 +1013,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
             ? Math.max(0, Math.floor((authEndedAt - authStartedAt) / 1000))
             : 0;
 
+        const latestSession = activeCallRef.current?.id === callToAccept.id ? activeCallRef.current : acceptedCallData;
         await recordCallHistory({
           callId: callToAccept.id,
           callerId: callToAccept.callerId,
-          callerName: callToAccept.callerName,
-          callerPhoto: callToAccept.callerPhoto,
-          calleeId: callToAccept.calleeId,
-          calleeName: callToAccept.calleeName,
-          calleePhoto: callToAccept.calleePhoto,
+          callerName: latestSession.callerName,
+          callerPhoto: resolveSafePhotoUrl(latestSession.callerPhoto, callToAccept.callerId),
+          calleeId: resolvedReceiverId,
+          calleeName: latestSession.calleeName,
+          calleePhoto: resolveSafePhotoUrl(latestSession.calleePhoto, resolvedReceiverId),
           type: callToAccept.type,
           status: remoteStatus,
           duration: finalDuration,
@@ -1049,14 +1145,18 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           rtdbRemove(rtdbRef(rtdb, `userCalls/${currentUser?.uid}/${callToReject.id}`))
         );
 
+        const rejectTargetId = callToReject.receiverId || callToReject.calleeId || currentUser?.uid || '';
         await recordCallHistory({
           callId: callToReject.id,
           callerId: callToReject.callerId,
           callerName: callToReject.callerName,
-          callerPhoto: callToReject.callerPhoto,
-          calleeId: callToReject.calleeId,
-          calleeName: callToReject.calleeName,
-          calleePhoto: callToReject.calleePhoto,
+          callerPhoto: resolveSafePhotoUrl(callToReject.callerPhoto, callToReject.callerId),
+          calleeId: rejectTargetId,
+          calleeName: userProfile?.displayName || callToReject.calleeName,
+          calleePhoto: resolveSafePhotoUrl(
+            userProfile?.photoURL || currentUser?.photoURL || callToReject.calleePhoto,
+            rejectTargetId
+          ),
           type: callToReject.type,
           status: 'rejected',
           duration: 0,
@@ -1115,14 +1215,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
 
       // 3. Record call history
+      const endTargetId = curCall.receiverId || curCall.calleeId;
       await recordCallHistory({
         callId: curCall.id,
         callerId: curCall.callerId,
         callerName: curCall.callerName,
-        callerPhoto: curCall.callerPhoto,
-        calleeId: curCall.calleeId,
+        callerPhoto: resolveSafePhotoUrl(curCall.callerPhoto, curCall.callerId),
+        calleeId: endTargetId,
         calleeName: curCall.calleeName,
-        calleePhoto: curCall.calleePhoto,
+        calleePhoto: resolveSafePhotoUrl(curCall.calleePhoto, endTargetId),
         type: curCall.type,
         status: finalStatus,
         duration: finalDuration,

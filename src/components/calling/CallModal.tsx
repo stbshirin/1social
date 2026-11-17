@@ -12,11 +12,15 @@ import {
   Maximize2,
   Minimize2,
   SwitchCamera,
-  User,
 } from 'lucide-react';
 import { useCall } from '../../context/CallContext';
+import { useAuth } from '../../context/AuthContext';
+import { useLiveUserProfile } from '../../hooks/useLiveUserProfile';
+import { getDefaultAvatar, resolveCallParticipantIdentities } from '../../utils/callIdentity';
+import { VerifiedBadge } from '../common/VerifiedBadge';
 
 export const CallModal: React.FC = () => {
+  const { currentUser, userProfile } = useAuth();
   const {
     activeCall,
     incomingCall,
@@ -42,6 +46,46 @@ export const CallModal: React.FC = () => {
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Strictly separate Caller vs Receiver (Local vs Remote) identities for Incoming, Outgoing, and Active Calls
+  const targetSession = activeCall || incomingCall;
+  const identity = resolveCallParticipantIdentities(targetSession, currentUser?.uid);
+
+  const remoteProfile = useLiveUserProfile(
+    targetSession ? identity.remoteUserId : null,
+    identity.remoteFallback
+  );
+
+  const localProfile = useLiveUserProfile(
+    targetSession ? identity.localUserId || currentUser?.uid : null,
+    {
+      displayName: userProfile?.displayName || identity.localFallback.displayName,
+      username: userProfile?.username || identity.localFallback.username,
+      photoURL:
+        userProfile?.photoURL || currentUser?.photoURL || identity.localFallback.photoURL,
+      isVerified: userProfile?.isVerified,
+    }
+  );
+
+  const [remoteImgError, setRemoteImgError] = useState(false);
+  const [localImgError, setLocalImgError] = useState(false);
+  const remotePhotoKey = `${targetSession?.id || ''}_${identity.remoteUserId}_${remoteProfile.photoURL}`;
+  const localPhotoKey = `${targetSession?.id || ''}_${localProfile.uid}_${localProfile.photoURL}`;
+
+  useEffect(() => {
+    setRemoteImgError(false);
+  }, [remotePhotoKey]);
+
+  useEffect(() => {
+    setLocalImgError(false);
+  }, [localPhotoKey]);
+
+  const remoteAvatarSrc = remoteImgError
+    ? getDefaultAvatar(identity.remoteUserId)
+    : remoteProfile.photoURL;
+  const localAvatarSrc = localImgError
+    ? getDefaultAvatar(localProfile.uid || currentUser?.uid)
+    : localProfile.photoURL;
 
   // Bind local stream to local video elements
   useEffect(() => {
@@ -78,12 +122,10 @@ export const CallModal: React.FC = () => {
   // =========================================================================
   if (incomingCall && !activeCall) {
     const isVideo = incomingCall.type === 'video';
-    const callerPhoto =
-      incomingCall.callerPhoto ||
-      `https://api.dicebear.com/7.x/avataaars/svg?seed=${incomingCall.callerId}`;
-    const callerName = incomingCall.callerName || 'Incoming Call';
-    const callerUsername = incomingCall.callerUsername
-      ? `@${incomingCall.callerUsername}`
+    const callerPhoto = remoteAvatarSrc;
+    const callerName = remoteProfile.displayName || 'Incoming Call';
+    const callerUsername = remoteProfile.username
+      ? `@${remoteProfile.username}`
       : '@user';
 
     return (
@@ -98,15 +140,23 @@ export const CallModal: React.FC = () => {
             <div className="absolute -inset-4 rounded-full bg-emerald-500/20 animate-ping" />
             <div className="absolute -inset-8 rounded-full bg-emerald-500/10 animate-pulse" />
             <img
+              key={remotePhotoKey}
               src={callerPhoto}
               alt={callerName}
+              onError={() => setRemoteImgError(true)}
               className="relative w-28 h-28 rounded-full border-4 border-emerald-500 object-cover shadow-2xl mx-auto bg-slate-800"
             />
           </div>
 
           {/* Caller Details */}
           <div className="mt-2 mb-6">
-            <h3 className="text-xl sm:text-2xl font-black text-white truncate px-2">{callerName}</h3>
+            <div className="flex items-center justify-center gap-1.5 px-2">
+              <h3 className="text-xl sm:text-2xl font-black text-white truncate">{callerName}</h3>
+              <VerifiedBadge
+                user={{ uid: identity.remoteUserId, isVerified: remoteProfile.isVerified }}
+                size="sm"
+              />
+            </div>
             <p className="text-xs text-slate-400 font-mono mt-0.5">{callerUsername}</p>
 
             {/* Badge indicating call type */}
@@ -154,15 +204,10 @@ export const CallModal: React.FC = () => {
 
   const isVideo = activeCall.type === 'video';
   const isRinging = activeCall.status === 'ringing' || activeCall.status === 'offering';
-  const otherPhoto =
-    activeCall.calleePhoto ||
-    activeCall.callerPhoto ||
-    `https://api.dicebear.com/7.x/avataaars/svg?seed=pulse`;
-  const otherName = activeCall.calleeName || activeCall.callerName || '1 social Member';
-  const otherUsername = activeCall.calleeUsername
-    ? `@${activeCall.calleeUsername}`
-    : activeCall.callerUsername
-    ? `@${activeCall.callerUsername}`
+  const otherPhoto = remoteAvatarSrc;
+  const otherName = remoteProfile.displayName || '1 social Member';
+  const otherUsername = remoteProfile.username
+    ? `@${remoteProfile.username}`
     : '@user';
 
   // =========================================================================
@@ -203,14 +248,22 @@ export const CallModal: React.FC = () => {
             <div className="absolute -inset-8 rounded-full bg-indigo-500/10 animate-pulse" />
             <div className="w-32 h-32 sm:w-40 sm:h-40 rounded-full border-4 border-indigo-500/60 p-1 shadow-2xl relative bg-slate-900">
               <img
+                key={remotePhotoKey}
                 src={otherPhoto}
                 alt={otherName}
+                onError={() => setRemoteImgError(true)}
                 className="w-full h-full rounded-full object-cover"
               />
             </div>
           </div>
 
-          <h2 className="text-2xl sm:text-3xl font-black text-white mb-1 px-4">{otherName}</h2>
+          <div className="flex items-center justify-center gap-2 mb-1 px-4">
+            <h2 className="text-2xl sm:text-3xl font-black text-white">{otherName}</h2>
+            <VerifiedBadge
+              user={{ uid: identity.remoteUserId, isVerified: remoteProfile.isVerified }}
+              size="sm"
+            />
+          </div>
           <p className="text-xs sm:text-sm text-slate-400 font-mono mb-4">{otherUsername}</p>
 
           {/* Animated Calling / Ringing status indicator */}
@@ -234,9 +287,18 @@ export const CallModal: React.FC = () => {
                 className={`w-full h-full object-cover ${!isScreenSharing ? '-scale-x-100' : ''}`}
               />
               {isVideoOff && (
-                <div className="absolute inset-0 bg-slate-900 flex flex-col items-center justify-center text-slate-400 text-xs gap-1">
-                  <VideoOff size={22} />
-                  <span>Camera off</span>
+                <div className="absolute inset-0 bg-slate-900 flex flex-col items-center justify-center text-slate-400 text-xs gap-2">
+                  <img
+                    key={localPhotoKey}
+                    src={localAvatarSrc}
+                    alt={localProfile.displayName}
+                    onError={() => setLocalImgError(true)}
+                    className="w-14 h-14 rounded-full object-cover border-2 border-slate-700"
+                  />
+                  <div className="flex items-center gap-1">
+                    <VideoOff size={14} />
+                    <span>Camera off</span>
+                  </div>
                 </div>
               )}
               <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/60 text-[10px] text-white font-medium">
@@ -311,14 +373,22 @@ export const CallModal: React.FC = () => {
       <div className="absolute top-0 inset-x-0 z-20 flex items-center justify-between p-4 bg-gradient-to-b from-black/80 via-black/40 to-transparent">
         <div className="flex items-center gap-3">
           <img
+            key={remotePhotoKey}
             src={otherPhoto}
             alt={otherName}
+            onError={() => setRemoteImgError(true)}
             className="w-10 h-10 rounded-full border border-white/20 object-cover bg-slate-800"
           />
           <div>
-            <h4 className="font-semibold text-sm sm:text-base leading-tight truncate max-w-xs sm:max-w-md">
-              {otherName}
-            </h4>
+            <div className="flex items-center gap-1.5">
+              <h4 className="font-semibold text-sm sm:text-base leading-tight truncate max-w-xs sm:max-w-md">
+                {otherName}
+              </h4>
+              <VerifiedBadge
+                user={{ uid: identity.remoteUserId, isVerified: remoteProfile.isVerified }}
+                size="xs"
+              />
+            </div>
             <div className="flex items-center gap-2 text-xs text-slate-300">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
               <span className="font-mono font-medium">{callDurationFormatted}</span>
@@ -354,10 +424,22 @@ export const CallModal: React.FC = () => {
             {/* Fallback if remote video track is inactive or loading */}
             {(!remoteStream || remoteStream.getVideoTracks().length === 0) && (
               <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/90 text-slate-300 p-4">
-                <div className="w-28 h-28 rounded-full bg-slate-800 border-2 border-slate-700 flex items-center justify-center mb-4 overflow-hidden">
-                  <User size={56} className="text-slate-400" />
+                <div className="w-28 h-28 rounded-full bg-slate-800 border-2 border-slate-700 flex items-center justify-center mb-4 overflow-hidden shadow-xl">
+                  <img
+                    key={remotePhotoKey}
+                    src={otherPhoto}
+                    alt={otherName}
+                    onError={() => setRemoteImgError(true)}
+                    className="w-full h-full object-cover"
+                  />
                 </div>
-                <p className="text-sm font-semibold">{otherName}</p>
+                <div className="flex items-center gap-1.5">
+                  <p className="text-sm font-semibold">{otherName}</p>
+                  <VerifiedBadge
+                    user={{ uid: identity.remoteUserId, isVerified: remoteProfile.isVerified }}
+                    size="xs"
+                  />
+                </div>
                 <p className="text-xs text-slate-400 mt-1">Connecting HD Video Stream...</p>
               </div>
             )}
@@ -372,9 +454,18 @@ export const CallModal: React.FC = () => {
                 className={`w-full h-full object-cover ${!isScreenSharing ? '-scale-x-100' : ''}`}
               />
               {isVideoOff && (
-                <div className="absolute inset-0 bg-slate-900 flex flex-col items-center justify-center text-slate-400 text-xs gap-1">
-                  <VideoOff size={24} />
-                  <span>Camera Off</span>
+                <div className="absolute inset-0 bg-slate-900 flex flex-col items-center justify-center text-slate-400 text-xs gap-2">
+                  <img
+                    key={localPhotoKey}
+                    src={localAvatarSrc}
+                    alt={localProfile.displayName}
+                    onError={() => setLocalImgError(true)}
+                    className="w-16 h-16 rounded-full object-cover border-2 border-slate-700"
+                  />
+                  <div className="flex items-center gap-1">
+                    <VideoOff size={14} />
+                    <span>Camera Off</span>
+                  </div>
                 </div>
               )}
               <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/60 text-[10px] text-white font-medium">
@@ -390,14 +481,22 @@ export const CallModal: React.FC = () => {
               <div className="absolute -inset-8 rounded-full bg-emerald-500/5 animate-pulse" />
               <div className="w-32 h-32 sm:w-44 sm:h-44 rounded-full border-4 border-slate-700 bg-slate-800 flex items-center justify-center overflow-hidden shadow-2xl">
                 <img
+                  key={remotePhotoKey}
                   src={otherPhoto}
                   alt={otherName}
+                  onError={() => setRemoteImgError(true)}
                   className="w-full h-full object-cover"
                 />
               </div>
             </div>
 
-            <h2 className="text-2xl sm:text-3xl font-black text-white mb-1 px-4">{otherName}</h2>
+            <div className="flex items-center justify-center gap-2 mb-1 px-4">
+              <h2 className="text-2xl sm:text-3xl font-black text-white">{otherName}</h2>
+              <VerifiedBadge
+                user={{ uid: identity.remoteUserId, isVerified: remoteProfile.isVerified }}
+                size="sm"
+              />
+            </div>
             <p className="text-xs sm:text-sm text-slate-400 font-mono mb-2">{otherUsername}</p>
 
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold mb-3">

@@ -46,6 +46,7 @@ import { usePresence } from '../../services/presenceService';
 import { AdminBadge } from '../common/AdminBadge';
 import { VerifiedBadge } from '../common/VerifiedBadge';
 import { subscribeToUserCallHistory, formatCallDuration } from '../../services/callHistoryService';
+import { useLiveUserProfile, getDefaultAvatar } from '../../hooks/useLiveUserProfile';
 
 interface MessengerViewProps {
   initialChatUser?: UserProfile | null;
@@ -1159,6 +1160,35 @@ const MessengerChatHeader: React.FC<MessengerChatHeaderProps> = ({
   onInitiateCall,
 }) => {
   const presence = usePresence(otherParticipant?.uid);
+  const liveOther = useLiveUserProfile(
+    !selectedConversation.isGroup ? otherParticipant?.uid : null,
+    {
+      displayName: otherParticipant?.displayName,
+      username: otherParticipant?.username,
+      photoURL: otherParticipant?.photoURL,
+    }
+  );
+  const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [otherParticipant?.uid, liveOther.photoURL]);
+
+  const avatarSrc = selectedConversation.isGroup
+    ? selectedConversation.groupPhoto || getDefaultAvatar(selectedConversation.id)
+    : imgError
+    ? getDefaultAvatar(otherParticipant?.uid)
+    : liveOther.photoURL;
+
+  const callTarget: UserProfile | null = otherParticipant
+    ? {
+        ...otherParticipant,
+        displayName: liveOther.displayName || otherParticipant.displayName,
+        username: liveOther.username || otherParticipant.username,
+        photoURL: liveOther.photoURL,
+        isVerified: liveOther.isVerified,
+      }
+    : null;
 
   return (
     <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900">
@@ -1171,12 +1201,9 @@ const MessengerChatHeader: React.FC<MessengerChatHeaderProps> = ({
         </button>
         <div className="relative shrink-0">
           <img
-            src={
-              selectedConversation.isGroup
-                ? selectedConversation.groupPhoto
-                : otherParticipant?.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${otherParticipant?.uid}`
-            }
+            src={avatarSrc}
             alt="avatar"
+            onError={() => setImgError(true)}
             className="w-10 h-10 rounded-full object-cover border border-slate-200 dark:border-slate-700"
           />
           {!selectedConversation.isGroup && (
@@ -1191,9 +1218,16 @@ const MessengerChatHeader: React.FC<MessengerChatHeaderProps> = ({
         <div>
           <div className="flex items-center gap-1.5 flex-wrap">
             <h3 className="text-sm font-bold text-slate-900 dark:text-white leading-tight">
-              {selectedConversation.isGroup ? selectedConversation.groupName : otherParticipant?.displayName}
+              {selectedConversation.isGroup
+                ? selectedConversation.groupName
+                : liveOther.displayName || otherParticipant?.displayName}
             </h3>
-            {otherParticipant && <VerifiedBadge user={{ uid: otherParticipant.uid }} size="xs" />}
+            {otherParticipant && (
+              <VerifiedBadge
+                user={{ uid: otherParticipant.uid, isVerified: liveOther.isVerified }}
+                size="xs"
+              />
+            )}
             {otherParticipant && <AdminBadge user={{ uid: otherParticipant.uid }} size="xs" />}
           </div>
           {!selectedConversation.isGroup && (
@@ -1212,17 +1246,17 @@ const MessengerChatHeader: React.FC<MessengerChatHeaderProps> = ({
       </div>
 
       {/* Instant Call Buttons for 1-on-1 */}
-      {otherParticipant && (
+      {callTarget && (
         <div className="flex items-center gap-2">
           <button
-            onClick={() => onInitiateCall(otherParticipant, 'audio')}
+            onClick={() => onInitiateCall(callTarget, 'audio')}
             className="p-2.5 rounded-full text-slate-600 dark:text-slate-300 hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-950/30 dark:hover:text-emerald-400 transition-colors cursor-pointer"
             title="Audio Call"
           >
             <Phone size={19} />
           </button>
           <button
-            onClick={() => onInitiateCall(otherParticipant, 'video')}
+            onClick={() => onInitiateCall(callTarget, 'video')}
             className="p-2.5 rounded-full text-slate-600 dark:text-slate-300 hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-950/30 dark:hover:text-indigo-400 transition-colors cursor-pointer"
             title="Video Call"
           >
@@ -1248,10 +1282,23 @@ const MessengerConversationItem: React.FC<MessengerConversationItemProps> = ({
   other,
 }) => {
   const presence = usePresence(other?.uid);
-  const title = conv.isGroup ? conv.groupName : other?.displayName || 'User';
+  const liveOther = useLiveUserProfile(!conv.isGroup ? other?.uid : null, {
+    displayName: other?.displayName,
+    username: other?.username,
+    photoURL: other?.photoURL,
+  });
+  const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [other?.uid, liveOther.photoURL]);
+
+  const title = conv.isGroup ? conv.groupName : liveOther.displayName || other?.displayName || 'User';
   const photo = conv.isGroup
-    ? conv.groupPhoto
-    : other?.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${other?.uid}`;
+    ? conv.groupPhoto || getDefaultAvatar(conv.id)
+    : imgError
+    ? getDefaultAvatar(other?.uid)
+    : liveOther.photoURL;
 
   return (
     <div
@@ -1266,6 +1313,7 @@ const MessengerConversationItem: React.FC<MessengerConversationItemProps> = ({
         <img
           src={photo}
           alt={title}
+          onError={() => setImgError(true)}
           className="w-11 h-11 rounded-full object-cover border border-slate-200 dark:border-slate-700"
         />
         {!conv.isGroup && (
@@ -1283,7 +1331,7 @@ const MessengerConversationItem: React.FC<MessengerConversationItemProps> = ({
             <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
               {title}
             </h4>
-            {other && <VerifiedBadge user={{ uid: other.uid }} size="xs" />}
+            {other && <VerifiedBadge user={{ uid: other.uid, isVerified: liveOther.isVerified }} size="xs" />}
             {other && <AdminBadge user={{ uid: other.uid }} size="xs" />}
           </div>
           <span className="text-[10px] text-slate-400 shrink-0">
@@ -1313,9 +1361,21 @@ const MessengerCallItem: React.FC<MessengerCallItemProps> = ({
 }) => {
   const isOutgoing = item.callerId === currentUserId;
   const otherUid = isOutgoing ? (item.receiverId || item.calleeId) : item.callerId;
-  const otherName = isOutgoing ? item.calleeName : item.callerName;
-  const otherPhoto = isOutgoing ? item.calleePhoto : item.callerPhoto;
+  const fallbackName = isOutgoing ? item.calleeName : item.callerName;
+  const fallbackPhoto = isOutgoing ? item.calleePhoto : item.callerPhoto;
   const presence = usePresence(otherUid);
+  const liveOther = useLiveUserProfile(otherUid, {
+    displayName: fallbackName,
+    photoURL: fallbackPhoto,
+  });
+  const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [otherUid, liveOther.photoURL]);
+
+  const otherName = liveOther.displayName || fallbackName || 'Unknown User';
+  const otherPhoto = imgError ? getDefaultAvatar(otherUid) : liveOther.photoURL;
 
   const effectiveType = item.callType || item.type || 'audio';
   const isVideo = effectiveType === 'video';
@@ -1360,9 +1420,10 @@ const MessengerCallItem: React.FC<MessengerCallItemProps> = ({
   const calleeProfile: UserProfile = {
     id: otherUid,
     uid: otherUid,
-    displayName: otherName || 'User',
-    username: otherName?.toLowerCase().replace(/\s+/g, '') || 'user',
-    photoURL: otherPhoto,
+    displayName: otherName,
+    username: liveOther.username || otherName.toLowerCase().replace(/\s+/g, '') || 'user',
+    photoURL: liveOther.photoURL,
+    isVerified: liveOther.isVerified,
     email: '',
     role: 'user',
   };
@@ -1372,8 +1433,9 @@ const MessengerCallItem: React.FC<MessengerCallItemProps> = ({
       <div className="flex items-center gap-3 min-w-0 flex-1">
         <div className="relative shrink-0">
           <img
-            src={otherPhoto || `https://api.dicebear.com/7.x/avataaars/svg?seed=${otherUid}`}
+            src={otherPhoto}
             alt={otherName}
+            onError={() => setImgError(true)}
             className="w-11 h-11 rounded-full object-cover border border-slate-200 dark:border-slate-700"
           />
           <span
@@ -1387,9 +1449,9 @@ const MessengerCallItem: React.FC<MessengerCallItemProps> = ({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 truncate">
             <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
-              {otherName || 'Unknown User'}
+              {otherName}
             </h4>
-            <VerifiedBadge user={{ uid: otherUid }} size="xs" />
+            <VerifiedBadge user={{ uid: otherUid, isVerified: liveOther.isVerified }} size="xs" />
             <AdminBadge user={{ uid: otherUid }} size="xs" />
           </div>
 
