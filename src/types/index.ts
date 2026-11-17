@@ -72,6 +72,7 @@ export interface Conversation {
   participants: string[];
   participantDetails: Record<string, ParticipantDetail>;
   isGroup: boolean;
+  pairKey?: string;
   groupName?: string;
   groupPhoto?: string;
   lastMessage?: string;
@@ -101,17 +102,22 @@ export interface CallSession {
   callerUsername?: string;
   callerPhoto?: string;
   calleeId: string;
+  receiverId?: string;
   calleeName: string;
   calleeUsername?: string;
   calleePhoto?: string;
   type: 'audio' | 'video';
-  status: 'offering' | 'ringing' | 'accepted' | 'rejected' | 'ended' | 'missed';
+  callType?: 'audio' | 'video';
+  status: 'offering' | 'ringing' | 'accepted' | 'rejected' | 'ended' | 'missed' | 'cancelled';
   offer?: any;
   answer?: any;
   createdAt: string;
-  connectedAt?: number;
-  endedAt?: string;
+  startedAt?: number | null;
+  connectedAt?: number | null;
+  endedAt?: number | string;
+  endedBy?: string;
   duration?: number;
+  durationSeconds?: number;
   durationFormatted?: string;
 }
 
@@ -122,14 +128,19 @@ export interface CallHistoryItem {
   callerName: string;
   callerPhoto?: string;
   calleeId: string;
+  receiverId?: string;
   calleeName: string;
   calleePhoto?: string;
   type: 'audio' | 'video';
-  status: 'accepted' | 'rejected' | 'missed' | 'ended' | 'outgoing' | 'incoming';
+  callType?: 'audio' | 'video';
+  status: 'accepted' | 'rejected' | 'missed' | 'ended' | 'cancelled' | 'outgoing' | 'incoming';
   duration: number; // In seconds
+  durationSeconds?: number; // In seconds
   durationFormatted: string; // e.g. "02:15", "00:00"
+  startedAt?: number | null;
   connectedAt?: number | null;
   endedAt: number | string;
+  endedBy?: string;
   createdAt: string;
   participants: string[];
 }

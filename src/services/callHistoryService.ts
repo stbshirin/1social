@@ -1,5 +1,5 @@
-import { ref, set, onValue, DatabaseReference } from 'firebase/database';
-import { doc, setDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
+import { ref, set, onValue } from 'firebase/database';
+import { doc, setDoc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
 import { rtdb, db } from '../firebase/config';
 import { CallHistoryItem } from '../types';
 
@@ -40,42 +40,77 @@ export interface RecordCallParams {
   calleeName: string;
   calleePhoto?: string;
   type: 'audio' | 'video';
-  status: 'accepted' | 'rejected' | 'missed' | 'ended';
+  status: 'accepted' | 'rejected' | 'missed' | 'ended' | 'cancelled';
+  startedAt?: number | null;
   connectedAt?: number | null;
   endedAt?: number;
+  endedBy?: string;
   duration?: number;
+  createdAt?: string;
 }
 
 // In-memory set to prevent duplicate recordings in the same browser session
 const recordedCalls = new Set<string>();
 
 /**
- * Atomically records call completion & final duration in both RTDB and Firestore
+ * Truly non-blocking RTDB wrapper with a 1.2s timeout so RTDB availability
+ * never blocks Firestore call history persistence or live subscriptions.
+ */
+function safeRtdbWrite(operation: () => Promise<any>): void {
+  try {
+    Promise.race([
+      operation(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('RTDB timeout')), 1200)),
+    ]).catch(() => {
+      // Ignored non-blockingly
+    });
+  } catch {
+    // Ignored non-blockingly
+  }
+}
+
+/**
+ * Atomically records call completion & final duration to Firestore (primary) and RTDB (mirror).
+ * Uses callId as deterministic document ID so each call produces exactly ONE shared record
+ * with identical startedAt, endedAt, and durationSeconds for both Caller and Receiver.
  */
 export async function recordCallHistory(params: RecordCallParams): Promise<void> {
   const { callId, callerId, calleeId } = params;
   if (!callId || !callerId || !calleeId) return;
 
-  const dedupeKey = `${callId}_${params.status}`;
-  if (recordedCalls.has(dedupeKey)) {
+  // Prevent duplicate writes in the same session for the same callId
+  if (recordedCalls.has(callId)) {
     return;
   }
-  recordedCalls.add(dedupeKey);
+  recordedCalls.add(callId);
 
-  const endedAtTimestamp = params.endedAt || Date.now();
+  const endedAtTimestamp = typeof params.endedAt === 'number' && params.endedAt > 0
+    ? params.endedAt
+    : Date.now();
+
+  const effectiveStartedAt = params.startedAt ?? params.connectedAt ?? null;
   let calculatedDuration = 0;
 
-  // Connected calls calculate real duration from connection timestamp
-  if (params.connectedAt && params.connectedAt > 0 && (params.status === 'accepted' || params.status === 'ended')) {
-    calculatedDuration = Math.max(0, Math.floor((endedAtTimestamp - params.connectedAt) / 1000));
+  // Ringing, missed, rejected, cancelled calls are strictly 0 duration (00:00)
+  if (params.status === 'rejected' || params.status === 'missed' || params.status === 'cancelled') {
+    calculatedDuration = 0;
+  } else if (effectiveStartedAt && effectiveStartedAt > 0) {
+    // Authoritative calculation: endedAt - startedAt
+    calculatedDuration = Math.max(0, Math.floor((endedAtTimestamp - effectiveStartedAt) / 1000));
   } else if (typeof params.duration === 'number' && params.duration > 0) {
-    calculatedDuration = params.duration;
+    calculatedDuration = Math.floor(params.duration);
   }
 
-  // Ringing, missed, rejected, busy calls are strictly 0 duration (00:00)
-  if (params.status === 'rejected' || params.status === 'missed') {
-    calculatedDuration = 0;
+  // If the call ended before WebRTC actually connected (no startedAt & 0 duration), treat as missed/cancelled
+  let finalStatus = params.status;
+  if (finalStatus === 'ended' && !effectiveStartedAt && calculatedDuration === 0) {
+    finalStatus = 'missed';
   }
+
+  const normalizedStartedAt =
+    finalStatus === 'rejected' || finalStatus === 'missed' || finalStatus === 'cancelled'
+      ? null
+      : effectiveStartedAt;
 
   const durationFormatted = formatCallDuration(calculatedDuration);
 
@@ -86,42 +121,90 @@ export async function recordCallHistory(params: RecordCallParams): Promise<void>
     callerName: params.callerName,
     callerPhoto: params.callerPhoto || '',
     calleeId: params.calleeId,
+    receiverId: params.calleeId,
     calleeName: params.calleeName,
     calleePhoto: params.calleePhoto || '',
     type: params.type,
-    status: params.status,
+    callType: params.type,
+    status: finalStatus,
     duration: calculatedDuration,
+    durationSeconds: calculatedDuration,
     durationFormatted,
-    connectedAt: params.connectedAt || null,
+    startedAt: normalizedStartedAt,
+    connectedAt: normalizedStartedAt,
     endedAt: endedAtTimestamp,
-    createdAt: new Date().toISOString(),
+    endedBy: params.endedBy || '',
+    createdAt: params.createdAt || new Date(normalizedStartedAt || endedAtTimestamp).toISOString(),
     participants: [params.callerId, params.calleeId],
   };
 
-  // 1. Save to Realtime Database under callHistory/${callId}
-  try {
-    const rtdbCallHistoryRef = ref(rtdb, `callHistory/${callId}`);
-    await set(rtdbCallHistoryRef, historyItem);
-
-    // Save individual user pointers for rapid indexing
-    const callerHistoryRef = ref(rtdb, `userCallHistory/${callerId}/${callId}`);
-    const calleeHistoryRef = ref(rtdb, `userCallHistory/${calleeId}/${callId}`);
-    await Promise.all([set(callerHistoryRef, historyItem), set(calleeHistoryRef, historyItem)]);
-  } catch (rtdbErr) {
-    console.warn('RTDB callHistory write notice (will sync to Firestore):', rtdbErr);
-  }
-
-  // 2. Save to Firestore callHistory collection
+  // 1. Primary authoritative write to Firestore callHistory/${callId}
   try {
     const firestoreCallRef = doc(db, 'callHistory', callId);
+    // Avoid overwriting an already finalized identical call history record from the other peer
+    const existingSnap = await getDoc(firestoreCallRef).catch(() => null);
+    if (existingSnap && existingSnap.exists()) {
+      const existingData = existingSnap.data() as CallHistoryItem;
+      const existingDur = existingData.durationSeconds ?? existingData.duration ?? 0;
+      const existingEnded = existingData.endedAt;
+      // Only update if existing record wasn't finalized yet or has incomplete data
+      if (existingEnded && (existingDur > 0 || calculatedDuration === 0)) {
+        return;
+      }
+    }
     await setDoc(firestoreCallRef, historyItem, { merge: true });
   } catch (fsErr) {
     console.warn('Firestore callHistory write notice:', fsErr);
+    // Allow retry if write failed
+    recordedCalls.delete(callId);
   }
+
+  // 2. Non-blocking mirror write to RTDB (if enabled)
+  safeRtdbWrite(() => {
+    const rtdbCallHistoryRef = ref(rtdb, `callHistory/${callId}`);
+    const callerHistoryRef = ref(rtdb, `userCallHistory/${callerId}/${callId}`);
+    const calleeHistoryRef = ref(rtdb, `userCallHistory/${calleeId}/${callId}`);
+    return Promise.all([
+      set(rtdbCallHistoryRef, historyItem),
+      set(callerHistoryRef, historyItem),
+      set(calleeHistoryRef, historyItem),
+    ]);
+  });
+}
+
+function normalizeCallHistoryItem(raw: any, docId?: string): CallHistoryItem {
+  const durationSeconds =
+    typeof raw.durationSeconds === 'number'
+      ? raw.durationSeconds
+      : typeof raw.duration === 'number'
+      ? raw.duration
+      : 0;
+  const callType = raw.callType || raw.type || 'audio';
+  const calleeId = raw.receiverId || raw.calleeId || '';
+  const startedAt = raw.startedAt ?? raw.connectedAt ?? null;
+
+  return {
+    ...raw,
+    id: raw.id || raw.callId || docId || '',
+    callId: raw.callId || raw.id || docId || '',
+    calleeId,
+    receiverId: calleeId,
+    type: callType,
+    callType,
+    duration: durationSeconds,
+    durationSeconds,
+    durationFormatted: raw.durationFormatted || formatCallDuration(durationSeconds),
+    startedAt,
+    connectedAt: startedAt,
+    participants: Array.isArray(raw.participants)
+      ? raw.participants
+      : [raw.callerId, calleeId].filter(Boolean),
+  };
 }
 
 /**
- * Subscribes to real-time call history for the authenticated user
+ * Subscribes to real-time call history for the authenticated user.
+ * Immediately attaches Firestore listener as primary authoritative source of truth.
  */
 export function subscribeToUserCallHistory(
   userId: string,
@@ -133,59 +216,84 @@ export function subscribeToUserCallHistory(
   }
 
   let isMounted = true;
+  const itemMap = new Map<string, CallHistoryItem>();
 
-  // Try RTDB first
+  const emitSorted = () => {
+    if (!isMounted) return;
+    const list = Array.from(itemMap.values());
+    list.sort((a, b) => {
+      const timeA =
+        typeof a.endedAt === 'number'
+          ? a.endedAt
+          : new Date(a.endedAt || a.createdAt || 0).getTime();
+      const timeB =
+        typeof b.endedAt === 'number'
+          ? b.endedAt
+          : new Date(b.endedAt || b.createdAt || 0).getTime();
+      return timeB - timeA;
+    });
+    onUpdate(list);
+  };
+
+  // 1. Primary Authoritative Firestore Listener (Immediate, non-blocking)
+  const q = query(
+    collection(db, 'callHistory'),
+    where('participants', 'array-contains', userId)
+  );
+
+  const unsubFirestore = onSnapshot(
+    q,
+    (snap) => {
+      if (!isMounted) return;
+      snap.docs.forEach((d) => {
+        const normalized = normalizeCallHistoryItem(d.data(), d.id);
+        if (normalized.callId) {
+          itemMap.set(normalized.callId, normalized);
+        }
+      });
+      emitSorted();
+    },
+    (err) => {
+      console.warn('Firestore callHistory listener notice:', err?.message || err);
+    }
+  );
+
+  // 2. Non-blocking RTDB Secondary Listener (for legacy RTDB items if RTDB is enabled)
+  let unsubRtdb: (() => void) | null = null;
   try {
     const userHistoryRef = ref(rtdb, `userCallHistory/${userId}`);
-    const unsubRtdb = onValue(
+    unsubRtdb = onValue(
       userHistoryRef,
       (snapshot) => {
         if (!isMounted) return;
         const val = snapshot.val();
-        if (val) {
-          const list: CallHistoryItem[] = Object.values(val);
-          list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-          onUpdate(list);
-          return;
+        if (val && typeof val === 'object') {
+          Object.entries(val).forEach(([key, raw]) => {
+            const normalized = normalizeCallHistoryItem(raw, key);
+            if (normalized.callId && !itemMap.has(normalized.callId)) {
+              itemMap.set(normalized.callId, normalized);
+            }
+          });
+          emitSorted();
         }
-
-        // If RTDB user node is empty, fall back to Firestore listener
-        fallbackFirestoreListener();
       },
-      (error) => {
-        console.warn('RTDB callHistory listener fallback to Firestore:', error?.message || error);
-        fallbackFirestoreListener();
+      () => {
+        // Silently ignored; Firestore is primary
       }
     );
-
-    let unsubFirestore: (() => void) | null = null;
-    function fallbackFirestoreListener() {
-      if (unsubFirestore || !isMounted) return;
-      const q = query(
-        collection(db, 'callHistory'),
-        where('participants', 'array-contains', userId)
-      );
-      unsubFirestore = onSnapshot(
-        q,
-        (snap) => {
-          if (!isMounted) return;
-          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as CallHistoryItem));
-          list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-          onUpdate(list);
-        },
-        (err) => {
-          console.warn('Firestore callHistory listener notice:', err?.message || err);
-        }
-      );
-    }
-
-    return () => {
-      isMounted = false;
-      unsubRtdb();
-      if (unsubFirestore) unsubFirestore();
-    };
-  } catch (err) {
-    console.warn('Call history subscription notice:', err);
-    return () => {};
+  } catch {
+    // Non-blocking
   }
+
+  return () => {
+    isMounted = false;
+    unsubFirestore();
+    if (unsubRtdb) {
+      try {
+        unsubRtdb();
+      } catch {
+        // Ignored
+      }
+    }
+  };
 }

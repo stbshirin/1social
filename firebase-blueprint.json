@@ -99,6 +99,7 @@
         "participants": { "type": "array" },
         "participantDetails": { "type": "object" },
         "isGroup": { "type": "boolean" },
+        "pairKey": { "type": "string", "maxLength": 260 },
         "groupName": { "type": "string", "maxLength": 100 },
         "groupPhoto": { "type": "string", "maxLength": 2048 },
         "lastMessage": { "type": "string", "maxLength": 1000 },
@@ -135,17 +136,49 @@
         "callerName": { "type": "string", "maxLength": 100 },
         "callerPhoto": { "type": "string", "maxLength": 2048 },
         "calleeId": { "type": "string", "maxLength": 128 },
+        "receiverId": { "type": "string", "maxLength": 128 },
         "calleeName": { "type": "string", "maxLength": 100 },
         "calleePhoto": { "type": "string", "maxLength": 2048 },
         "type": { "type": "string", "enum": ["audio", "video"] },
-        "status": { "type": "string", "enum": ["offering", "ringing", "accepted", "rejected", "ended", "missed"] },
+        "callType": { "type": "string", "enum": ["audio", "video"] },
+        "status": { "type": "string", "enum": ["offering", "ringing", "accepted", "rejected", "ended", "missed", "cancelled"] },
         "offer": { "type": "object" },
         "answer": { "type": "object" },
         "createdAt": { "type": "string" },
-        "endedAt": { "type": "string" },
-        "duration": { "type": "number" }
+        "startedAt": { "type": "number" },
+        "endedAt": { "type": ["number", "string"] },
+        "endedBy": { "type": "string", "maxLength": 128 },
+        "duration": { "type": "number" },
+        "durationSeconds": { "type": "number" }
       },
       "required": ["callerId", "calleeId", "type", "status"]
+    },
+    "CallHistory": {
+      "title": "CallHistory",
+      "description": "Persisted audio and video call history log",
+      "type": "object",
+      "properties": {
+        "callId": { "type": "string", "maxLength": 128 },
+        "callerId": { "type": "string", "maxLength": 128 },
+        "callerName": { "type": "string", "maxLength": 100 },
+        "callerPhoto": { "type": "string", "maxLength": 2048 },
+        "calleeId": { "type": "string", "maxLength": 128 },
+        "receiverId": { "type": "string", "maxLength": 128 },
+        "calleeName": { "type": "string", "maxLength": 100 },
+        "calleePhoto": { "type": "string", "maxLength": 2048 },
+        "type": { "type": "string", "enum": ["audio", "video"] },
+        "callType": { "type": "string", "enum": ["audio", "video"] },
+        "status": { "type": "string", "enum": ["accepted", "rejected", "missed", "ended", "cancelled"] },
+        "duration": { "type": "number" },
+        "durationSeconds": { "type": "number" },
+        "durationFormatted": { "type": "string", "maxLength": 32 },
+        "startedAt": { "type": ["number", "null"] },
+        "endedAt": { "type": "number" },
+        "endedBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string" },
+        "participants": { "type": "array" }
+      },
+      "required": ["callId", "callerId", "calleeId", "callType", "status", "participants"]
     },
     "Notification": {
       "title": "Notification",
@@ -260,6 +293,10 @@
     "/reports/{reportId}": {
       "schema": { "$ref": "#/entities/Report" },
       "description": "Content and user moderation reports"
+    },
+    "/callHistory/{historyId}": {
+      "schema": { "$ref": "#/entities/CallHistory" },
+      "description": "Persisted call history records shared between caller and receiver"
     },
     "/fcmTokens/{tokenId}": {
       "schema": { "$ref": "#/entities/FCMToken" },

@@ -105,7 +105,8 @@ service cloud.firestore {
 
     // Conversations Collection
     match /conversations/{conversationId} {
-      allow read: if isSignedIn() && (request.auth.uid in resource.data.participants || isAdmin());
+      allow get: if isSignedIn() && (resource == null || request.auth.uid in resource.data.participants || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in resource.data.participants || isAdmin());
       allow create: if isSignedIn() && request.auth.uid in incoming().participants;
       allow update: if isSignedIn() && (request.auth.uid in resource.data.participants || isAdmin());
       allow delete: if isAdmin();
@@ -165,13 +166,30 @@ service cloud.firestore {
 
     // Call History Collection
     match /callHistory/{historyId} {
-      allow read: if isSignedIn() && (
+      allow get: if isSignedIn() && (
+        resource == null ||
         request.auth.uid == resource.data.callerId ||
         request.auth.uid == resource.data.calleeId ||
         request.auth.uid in resource.data.participants ||
         isAdmin()
       );
-      allow create, update: if isSignedIn() && (
+      allow list: if isSignedIn() && (
+        request.auth.uid == resource.data.callerId ||
+        request.auth.uid == resource.data.calleeId ||
+        request.auth.uid in resource.data.participants ||
+        isAdmin()
+      );
+      allow create: if isSignedIn() && (
+        request.auth.uid == incoming().callerId ||
+        request.auth.uid == incoming().calleeId ||
+        request.auth.uid in incoming().participants
+      );
+      allow update: if isSignedIn() && (
+        request.auth.uid == resource.data.callerId ||
+        request.auth.uid == resource.data.calleeId ||
+        request.auth.uid in resource.data.participants ||
+        isAdmin()
+      ) && (
         request.auth.uid == incoming().callerId ||
         request.auth.uid == incoming().calleeId ||
         request.auth.uid in incoming().participants

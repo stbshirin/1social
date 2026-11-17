@@ -190,15 +190,29 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const handleExit = () => {
       const cur = activeCallRef.current;
       if (cur) {
+        const isRingingExit = !connectedAtRef.current && cur.status === 'ringing';
+        const endedAtTs = Date.now();
         const dur = connectedAtRef.current
-          ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
+          ? Math.max(0, Math.floor((endedAtTs - connectedAtRef.current) / 1000))
           : 0;
+        const exitStatus = isRingingExit ? 'missed' : 'ended';
+
+        try {
+          updateDoc(doc(db, 'calls', cur.id), {
+            status: exitStatus,
+            startedAt: connectedAtRef.current || null,
+            endedAt: endedAtTs,
+            duration: dur,
+            durationSeconds: dur,
+            endedBy: currentUser?.uid || '',
+          }).catch(() => {});
+        } catch (e) {}
 
         safeRtdbOp(() =>
           rtdbUpdate(rtdbRef(rtdb, `calls/${cur.id}`), {
-            status: 'ended',
+            status: exitStatus,
             endedBy: currentUser?.uid || '',
-            endedAt: Date.now(),
+            endedAt: endedAtTs,
             duration: dur,
           })
         );
@@ -212,10 +226,12 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           calleeName: cur.calleeName,
           calleePhoto: cur.calleePhoto,
           type: cur.type,
-          status: 'ended',
+          status: exitStatus,
           duration: dur,
+          startedAt: connectedAtRef.current,
           connectedAt: connectedAtRef.current,
-          endedAt: Date.now(),
+          endedAt: endedAtTs,
+          endedBy: currentUser?.uid || '',
         }).catch(() => {});
 
         cleanupMedia();
@@ -440,7 +456,14 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const pc = new RTCPeerConnection(ICE_SERVERS);
       pcRef.current = pc;
 
-      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+      if (stream.getTracks().length > 0) {
+        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+      } else {
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+        if (type === 'video') {
+          pc.addTransceiver('video', { direction: 'recvonly' });
+        }
+      }
 
       const remote = new MediaStream();
       remoteStreamRef.current = remote;
@@ -453,6 +476,46 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
         } else if (event.track) {
           remote.addTrack(event.track);
+        }
+      };
+
+      const startTimerAt = (ts: number) => {
+        if (!connectedAtRef.current) {
+          connectedAtRef.current = ts;
+        }
+        if (!timerRef.current) {
+          setCallDuration(Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000)));
+          timerRef.current = setInterval(() => {
+            if (connectedAtRef.current) {
+              const elapsed = Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000));
+              setCallDuration(elapsed);
+            }
+          }, 1000);
+        }
+      };
+
+      const markWebRTCConnected = () => {
+        if (connectedAtRef.current) return;
+        const startedNow = Date.now();
+        startTimerAt(startedNow);
+        updateDoc(callDocRef, {
+          startedAt: startedNow,
+          connectedAt: startedNow,
+        }).catch(() => {});
+        setActiveCall((prev) =>
+          prev ? { ...prev, status: 'accepted', startedAt: startedNow, connectedAt: startedNow } : null
+        );
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') {
+          markWebRTCConnected();
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+          markWebRTCConnected();
         }
       };
 
@@ -506,51 +569,66 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       safeRtdbOp(() => rtdbOnDisconnect(rtdbRef(rtdb, `userCalls/${targetCalleeUid}/${callId}`)).remove());
 
       // Handler when call is accepted by remote user
-      const handleRemoteAccepted = async (answer: any, connectedAt?: number) => {
-        if (!pcRef.current || pcRef.current.currentRemoteDescription) return;
+      const handleRemoteAccepted = async (answer: any, remoteStartedAt?: number) => {
+        if (!pcRef.current) return;
 
-        soundEffects.playCallConnected();
-        const answerDescription = new RTCSessionDescription(answer);
-        await pcRef.current.setRemoteDescription(answerDescription);
+        if (!pcRef.current.currentRemoteDescription) {
+          soundEffects.playCallConnected();
+          const answerDescription = new RTCSessionDescription(answer);
+          await pcRef.current.setRemoteDescription(answerDescription);
 
-        // Flush any ICE candidates that arrived before remote description was set
-        while (pendingCandidatesRef.current.length > 0) {
-          const candidate = pendingCandidatesRef.current.shift();
-          if (candidate && pcRef.current) {
-            try {
-              await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-            } catch (e) {
-              console.warn('Error flushing pending caller ICE candidate:', e);
+          // Flush any ICE candidates that arrived before remote description was set
+          while (pendingCandidatesRef.current.length > 0) {
+            const candidate = pendingCandidatesRef.current.shift();
+            if (candidate && pcRef.current) {
+              try {
+                await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+              } catch (e) {
+                console.warn('Error flushing pending caller ICE candidate:', e);
+              }
             }
           }
+
+          setActiveCall((prev) => (prev ? { ...prev, status: 'accepted' } : null));
         }
 
-        const connTimestamp = connectedAt || Date.now();
-        connectedAtRef.current = connTimestamp;
-        setCallDuration(0);
-
-        if (!timerRef.current) {
-          timerRef.current = setInterval(() => {
-            if (connectedAtRef.current) {
-              const elapsed = Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000));
-              setCallDuration(elapsed);
-            }
-          }, 1000);
+        // Synchronize startedAt if peer already reported WebRTC connected
+        if (typeof remoteStartedAt === 'number' && remoteStartedAt > 0) {
+          connectedAtRef.current = remoteStartedAt;
+          startTimerAt(remoteStartedAt);
+          setActiveCall((prev) =>
+            prev ? { ...prev, status: 'accepted', startedAt: remoteStartedAt, connectedAt: remoteStartedAt } : null
+          );
         }
-        setActiveCall((prev) =>
-          prev ? { ...prev, status: 'accepted', connectedAt: connTimestamp } : null
-        );
       };
 
       // Handler when call is terminated or rejected by remote user
-      const handleRemoteTerminated = async (status: 'rejected' | 'ended') => {
+      const handleRemoteTerminated = async (
+        status: 'rejected' | 'ended' | 'missed' | 'cancelled',
+        remoteData?: any
+      ) => {
         if (isCleaningUpRef.current) return;
         isCleaningUpRef.current = true;
 
         soundEffects.playCallEnded();
-        const finalDuration = connectedAtRef.current
-          ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
-          : 0;
+        const authStartedAt =
+          typeof remoteData?.startedAt === 'number'
+            ? remoteData.startedAt
+            : connectedAtRef.current;
+        const authEndedAt =
+          typeof remoteData?.endedAt === 'number' && remoteData.endedAt > 0
+            ? remoteData.endedAt
+            : Date.now();
+        const finalDuration =
+          status === 'rejected' || status === 'missed' || status === 'cancelled'
+            ? 0
+            : typeof remoteData?.durationSeconds === 'number'
+            ? remoteData.durationSeconds
+            : typeof remoteData?.duration === 'number'
+            ? remoteData.duration
+            : authStartedAt
+            ? Math.max(0, Math.floor((authEndedAt - authStartedAt) / 1000))
+            : 0;
 
         await recordCallHistory({
           callId,
@@ -563,8 +641,10 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           type,
           status,
           duration: finalDuration,
-          connectedAt: connectedAtRef.current,
-          endedAt: Date.now(),
+          startedAt: authStartedAt,
+          connectedAt: authStartedAt,
+          endedAt: authEndedAt,
+          endedBy: remoteData?.endedBy || '',
         }).catch(() => {});
 
         cleanupMedia();
@@ -578,9 +658,14 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (!data) return;
 
           if (data.status === 'accepted' && data.answer) {
-            await handleRemoteAccepted(data.answer, data.connectedAt);
-          } else if (data.status === 'rejected' || data.status === 'ended') {
-            await handleRemoteTerminated(data.status);
+            await handleRemoteAccepted(data.answer, data.startedAt);
+          } else if (
+            data.status === 'rejected' ||
+            data.status === 'ended' ||
+            data.status === 'missed' ||
+            data.status === 'cancelled'
+          ) {
+            await handleRemoteTerminated(data.status, data);
           }
         },
         (error) => {
@@ -598,9 +683,14 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (!data) return;
 
             if (data.status === 'accepted' && data.answer) {
-              await handleRemoteAccepted(data.answer, data.connectedAt);
-            } else if (data.status === 'rejected' || data.status === 'ended') {
-              await handleRemoteTerminated(data.status);
+              await handleRemoteAccepted(data.answer, data.startedAt);
+            } else if (
+              data.status === 'rejected' ||
+              data.status === 'ended' ||
+              data.status === 'missed' ||
+              data.status === 'cancelled'
+            ) {
+              await handleRemoteTerminated(data.status, data);
             }
           },
           () => {}
@@ -648,27 +738,20 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const callToAccept = incomingCall;
 
     // STEP 1: IMMEDIATELY TRANSITION TO CONNECTED ACTIVE CALL SCREEN (0ms latency!)
-    const connectedNow = Date.now();
-    connectedAtRef.current = connectedNow;
+    // Duration stays at 00:00 until WebRTC connectionState reaches 'connected'
+    connectedAtRef.current = null;
+    setCallDuration(0);
 
     const acceptedCallData: CallSession = {
       ...callToAccept,
       status: 'accepted',
-      connectedAt: connectedNow,
+      startedAt: null,
+      connectedAt: null,
     };
     setActiveCall(acceptedCallData);
     activeCallRef.current = acceptedCallData;
     setIncomingCall(null);
     pendingCandidatesRef.current = [];
-
-    // Start duration timer immediately
-    setCallDuration(0);
-    timerRef.current = setInterval(() => {
-      if (connectedAtRef.current) {
-        const elapsed = Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000));
-        setCallDuration(elapsed);
-      }
-    }, 1000);
 
     try {
       // STEP 2: Acquire Media Stream with Fallback
@@ -691,7 +774,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const pc = new RTCPeerConnection(ICE_SERVERS);
       pcRef.current = pc;
 
-      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+      if (stream.getTracks().length > 0) {
+        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+      }
 
       const remote = new MediaStream();
       remoteStreamRef.current = remote;
@@ -708,6 +793,46 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
 
       const callDocRef = doc(db, 'calls', callToAccept.id);
+
+      const startTimerAt = (ts: number) => {
+        if (!connectedAtRef.current) {
+          connectedAtRef.current = ts;
+        }
+        if (!timerRef.current) {
+          setCallDuration(Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000)));
+          timerRef.current = setInterval(() => {
+            if (connectedAtRef.current) {
+              const elapsed = Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000));
+              setCallDuration(elapsed);
+            }
+          }, 1000);
+        }
+      };
+
+      const markWebRTCConnected = () => {
+        if (connectedAtRef.current) return;
+        const startedNow = Date.now();
+        startTimerAt(startedNow);
+        updateDoc(callDocRef, {
+          startedAt: startedNow,
+          connectedAt: startedNow,
+        }).catch(() => {});
+        setActiveCall((prev) =>
+          prev ? { ...prev, status: 'accepted', startedAt: startedNow, connectedAt: startedNow } : null
+        );
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') {
+          markWebRTCConnected();
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+          markWebRTCConnected();
+        }
+      };
 
       // Collect and push callee local ICE candidates
       pc.onicecandidate = async (event) => {
@@ -749,7 +874,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           sdp: answerDescription.sdp,
         },
         status: 'accepted',
-        connectedAt: connectedNow,
         acceptedAt: serverTimestamp(),
       });
 
@@ -762,7 +886,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
             sdp: answerDescription.sdp,
           },
           status: 'accepted',
-          connectedAt: connectedNow,
         });
       });
       safeRtdbOp(() => rtdbRemove(rtdbRef(rtdb, `userCalls/${currentUser.uid}/${callToAccept.id}`)));
@@ -771,14 +894,29 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       soundEffects.playCallConnected();
 
       // Call termination handler
-      const handleCallEnded = async () => {
+      const handleCallEnded = async (remoteStatus: 'ended' | 'rejected' | 'missed' | 'cancelled', remoteData?: any) => {
         if (isCleaningUpRef.current) return;
         isCleaningUpRef.current = true;
 
         soundEffects.playCallEnded();
-        const finalDuration = connectedAtRef.current
-          ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
-          : 0;
+        const authStartedAt =
+          typeof remoteData?.startedAt === 'number'
+            ? remoteData.startedAt
+            : connectedAtRef.current;
+        const authEndedAt =
+          typeof remoteData?.endedAt === 'number' && remoteData.endedAt > 0
+            ? remoteData.endedAt
+            : Date.now();
+        const finalDuration =
+          remoteStatus === 'rejected' || remoteStatus === 'missed' || remoteStatus === 'cancelled'
+            ? 0
+            : typeof remoteData?.durationSeconds === 'number'
+            ? remoteData.durationSeconds
+            : typeof remoteData?.duration === 'number'
+            ? remoteData.duration
+            : authStartedAt
+            ? Math.max(0, Math.floor((authEndedAt - authStartedAt) / 1000))
+            : 0;
 
         await recordCallHistory({
           callId: callToAccept.id,
@@ -789,22 +927,36 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           calleeName: callToAccept.calleeName,
           calleePhoto: callToAccept.calleePhoto,
           type: callToAccept.type,
-          status: 'ended',
+          status: remoteStatus,
           duration: finalDuration,
-          connectedAt: connectedAtRef.current,
-          endedAt: Date.now(),
+          startedAt: authStartedAt,
+          connectedAt: authStartedAt,
+          endedAt: authEndedAt,
+          endedBy: remoteData?.endedBy || '',
         }).catch(() => {});
 
         cleanupMedia();
       };
 
-      // Listen via Firestore for end/reject from caller
+      // Listen via Firestore for startedAt sync & end/reject from caller
       unsubCallRef.current = onSnapshot(
         callDocRef,
         async (snap) => {
           const data = snap.data();
-          if (data && (data.status === 'ended' || data.status === 'rejected')) {
-            await handleCallEnded();
+          if (!data) return;
+
+          if (data.status === 'accepted' && typeof data.startedAt === 'number' && data.startedAt > 0) {
+            connectedAtRef.current = data.startedAt;
+            startTimerAt(data.startedAt);
+          }
+
+          if (
+            data.status === 'ended' ||
+            data.status === 'rejected' ||
+            data.status === 'missed' ||
+            data.status === 'cancelled'
+          ) {
+            await handleCallEnded(data.status, data);
           }
         },
         (error) => {
@@ -819,8 +971,14 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           rtdbCallRef,
           async (snap) => {
             const data = snap.val();
-            if (data && (data.status === 'ended' || data.status === 'rejected')) {
-              await handleCallEnded();
+            if (
+              data &&
+              (data.status === 'ended' ||
+                data.status === 'rejected' ||
+                data.status === 'missed' ||
+                data.status === 'cancelled')
+            ) {
+              await handleCallEnded(data.status, data);
             }
           },
           () => {}
@@ -865,6 +1023,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     soundEffects.stopRingtone();
     if (incomingCall) {
       const callToReject = incomingCall;
+      const endedAtTs = Date.now();
       setIncomingCall(null);
 
       try {
@@ -872,14 +1031,18 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const callDocRef = doc(db, 'calls', callToReject.id);
         await updateDoc(callDocRef, {
           status: 'rejected',
-          endedAt: serverTimestamp(),
+          startedAt: null,
+          endedAt: endedAtTs,
+          duration: 0,
+          durationSeconds: 0,
+          endedBy: currentUser?.uid || '',
         });
 
         // Update RTDB non-blockingly
         safeRtdbOp(() =>
           rtdbUpdate(rtdbRef(rtdb, `calls/${callToReject.id}`), {
             status: 'rejected',
-            endedAt: Date.now(),
+            endedAt: endedAtTs,
           })
         );
         safeRtdbOp(() =>
@@ -897,8 +1060,10 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           type: callToReject.type,
           status: 'rejected',
           duration: 0,
+          startedAt: null,
           connectedAt: null,
-          endedAt: Date.now(),
+          endedAt: endedAtTs,
+          endedBy: currentUser?.uid || '',
         }).catch(() => {});
       } catch (err) {
         console.warn('Error updating call rejection:', err);
@@ -910,9 +1075,13 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const endCall = async () => {
     soundEffects.playCallEnded();
     const curCall = activeCallRef.current || activeCall;
-    const finalDuration = connectedAtRef.current
-      ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
-      : callDurationRef.current || 0;
+    const endedAtTs = Date.now();
+    const startedAtTs = connectedAtRef.current || null;
+    const isUnansweredCancel = !startedAtTs && curCall?.status === 'ringing';
+    const finalStatus: 'missed' | 'ended' = isUnansweredCancel ? 'missed' : 'ended';
+    const finalDuration = startedAtTs
+      ? Math.max(0, Math.floor((endedAtTs - startedAtTs) / 1000))
+      : 0;
 
     if (curCall) {
       isCleaningUpRef.current = true;
@@ -921,9 +1090,12 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const callDocRef = doc(db, 'calls', curCall.id);
         await updateDoc(callDocRef, {
-          status: 'ended',
+          status: finalStatus,
+          startedAt: startedAtTs,
+          endedAt: endedAtTs,
           duration: finalDuration,
-          endedAt: serverTimestamp(),
+          durationSeconds: finalDuration,
+          endedBy: currentUser?.uid || '',
         });
       } catch (err) {
         console.warn('Error updating ended call in Firestore:', err);
@@ -932,10 +1104,10 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // 2. Update RTDB non-blockingly
       safeRtdbOp(() =>
         rtdbUpdate(rtdbRef(rtdb, `calls/${curCall.id}`), {
-          status: 'ended',
+          status: finalStatus,
           duration: finalDuration,
           endedBy: currentUser?.uid || '',
-          endedAt: Date.now(),
+          endedAt: endedAtTs,
         })
       );
       safeRtdbOp(() =>
@@ -952,10 +1124,12 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         calleeName: curCall.calleeName,
         calleePhoto: curCall.calleePhoto,
         type: curCall.type,
-        status: 'ended',
+        status: finalStatus,
         duration: finalDuration,
-        connectedAt: connectedAtRef.current,
-        endedAt: Date.now(),
+        startedAt: startedAtTs,
+        connectedAt: startedAtTs,
+        endedAt: endedAtTs,
+        endedBy: currentUser?.uid || '',
       }).catch(() => {});
     }
 

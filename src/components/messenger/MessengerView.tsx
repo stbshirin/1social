@@ -27,10 +27,10 @@ import {
   onSnapshot,
   addDoc,
   doc,
+  getDoc,
   setDoc,
   updateDoc,
   orderBy,
-  serverTimestamp,
   getDocs,
   deleteDoc,
 } from 'firebase/firestore';
@@ -59,10 +59,13 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
   const { initiateCall } = useCall();
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationsLoaded, setConversationsLoaded] = useState(false);
+  const [mergedConvIdsByOtherUid, setMergedConvIdsByOtherUid] = useState<Record<string, string[]>>({});
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageText, setMessageText] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const creatingChatRef = useRef(false);
 
   // Sidebar Tabs: Chats vs Calls
   const [activeSidebarTab, setActiveSidebarTab] = useState<'chats' | 'calls'>('chats');
@@ -107,9 +110,115 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
     scrollToBottom();
   }, [messages]);
 
-  // Load conversations where current user is a participant
+  // Helper: Resolve timestamp in ms for sorting conversations
+  const getConvTimestamp = (c: Conversation): number => {
+    const raw = c.lastMessageAt || c.updatedAt || c.createdAt;
+    if (!raw) return 0;
+    const t = new Date(raw).getTime();
+    return isNaN(t) ? 0 : t;
+  };
+
+  // Helper: Deduplicate 1-on-1 conversations by otherUserId (never by displayName)
+  // while keeping group chats distinct and mapping all duplicate conversation IDs for message merging.
+  const deduplicateConversations = (
+    rawList: Conversation[],
+    uid: string
+  ): { deduplicated: Conversation[]; mergedIdsMap: Record<string, string[]> } => {
+    const directGroups = new Map<string, Conversation[]>();
+    const groupChats: Conversation[] = [];
+
+    rawList.forEach((conv) => {
+      if (conv.isGroup) {
+        groupChats.push(conv);
+        return;
+      }
+      const otherUid =
+        conv.participants?.find((p) => p !== uid) ||
+        (conv.participants?.includes(uid) && conv.participants.length <= 2 ? uid : '');
+
+      if (!otherUid) {
+        groupChats.push(conv);
+        return;
+      }
+
+      const existingGroup = directGroups.get(otherUid) || [];
+      existingGroup.push(conv);
+      directGroups.set(otherUid, existingGroup);
+    });
+
+    const mergedIdsMap: Record<string, string[]> = {};
+    const mergedDirects: Conversation[] = [];
+
+    directGroups.forEach((group, otherUid) => {
+      mergedIdsMap[otherUid] = group.map((c) => c.id);
+
+      if (group.length === 1) {
+        mergedDirects.push(group[0]);
+        return;
+      }
+
+      // Rank duplicates: prefer real messages over placeholder 'Conversation started', then latest activity, then deterministic dm_ id
+      const sortedGroup = [...group].sort((a, b) => {
+        const aHasRealMsg = Boolean(a.lastMessage && a.lastMessage !== 'Conversation started');
+        const bHasRealMsg = Boolean(b.lastMessage && b.lastMessage !== 'Conversation started');
+        if (aHasRealMsg !== bHasRealMsg) return bHasRealMsg ? 1 : -1;
+
+        const timeDiff = getConvTimestamp(b) - getConvTimestamp(a);
+        if (timeDiff !== 0) return timeDiff;
+
+        const aIsDet = a.id.startsWith('dm_');
+        const bIsDet = b.id.startsWith('dm_');
+        if (aIsDet !== bIsDet) return bIsDet ? 1 : -1;
+
+        return 0;
+      });
+
+      const primary = sortedGroup[0];
+      // Merge participantDetails across duplicates so profile info stays complete
+      const mergedParticipantDetails = { ...(primary.participantDetails || {}) };
+      for (let i = sortedGroup.length - 1; i >= 0; i--) {
+        const details = sortedGroup[i].participantDetails || {};
+        Object.entries(details).forEach(([pUid, info]) => {
+          if (info) {
+            mergedParticipantDetails[pUid] = {
+              ...(mergedParticipantDetails[pUid] || {}),
+              ...info,
+            };
+          }
+        });
+      }
+
+      // Find the freshest message metadata across all duplicate records
+      const freshestByTime = [...group].sort((a, b) => getConvTimestamp(b) - getConvTimestamp(a))[0];
+
+      mergedDirects.push({
+        ...primary,
+        participantDetails: mergedParticipantDetails,
+        lastMessage:
+          freshestByTime.lastMessage && freshestByTime.lastMessage !== 'Conversation started'
+            ? freshestByTime.lastMessage
+            : primary.lastMessage,
+        lastMessageSenderId: freshestByTime.lastMessageSenderId || primary.lastMessageSenderId,
+        lastMessageAt: freshestByTime.lastMessageAt || primary.lastMessageAt,
+        updatedAt: freshestByTime.updatedAt || primary.updatedAt,
+      });
+    });
+
+    const deduplicated = [...mergedDirects, ...groupChats].sort(
+      (a, b) => getConvTimestamp(b) - getConvTimestamp(a)
+    );
+
+    return { deduplicated, mergedIdsMap };
+  };
+
+  // Load conversations where current user is a participant (and deduplicate by otherUserId)
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser) {
+      setConversations([]);
+      setMergedConvIdsByOtherUid({});
+      setConversationsLoaded(false);
+      return;
+    }
 
     const q = query(
       collection(db, 'conversations'),
@@ -119,123 +228,246 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
     const unsub = onSnapshot(
       q,
       (snapshot) => {
-        const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Conversation));
-        list.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
-        setConversations(list);
+        const rawList = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Conversation));
+        const { deduplicated, mergedIdsMap } = deduplicateConversations(rawList, currentUser.uid);
+        setConversations(deduplicated);
+        setMergedConvIdsByOtherUid(mergedIdsMap);
+        setConversationsLoaded(true);
+
+        // Keep selectedConversation synchronized with canonical deduplicated entry
+        setSelectedConversation((prev) => {
+          if (!prev) return null;
+          if (!prev.isGroup) {
+            const prevOther = prev.participants.find((p) => p !== currentUser.uid);
+            const matchByOther = prevOther
+              ? deduplicated.find((c) => !c.isGroup && c.participants.includes(prevOther))
+              : undefined;
+            if (matchByOther) return matchByOther;
+          }
+          const matchById = deduplicated.find((c) => c.id === prev.id);
+          return matchById || prev;
+        });
       },
       (error) => {
         console.warn('Conversations listener notice:', error?.message || error);
+        setConversationsLoaded(true);
       }
     );
 
     return () => unsub();
   }, [currentUser]);
 
-  // Load all socialApp users for starting a new chat
+  // Load all socialApp users for starting a new chat (deduplicated by uid)
   useEffect(() => {
     if (!currentUser) return;
     const fetchUsers = async () => {
-      const snap = await getDocs(getSocialUsersCollection());
-      const list = snap.docs
-        .map((d) => ({ id: d.id, ...d.data() } as UserProfile))
-        .filter((u) => u.uid !== currentUser.uid);
-      setAllUsers(list);
+      try {
+        const snap = await getDocs(getSocialUsersCollection());
+        const byUid = new Map<string, UserProfile>();
+        snap.docs.forEach((d) => {
+          const data = { id: d.id, ...d.data() } as UserProfile;
+          const uid = data.uid || d.id;
+          if (uid && uid !== currentUser.uid && !byUid.has(uid)) {
+            byUid.set(uid, { ...data, uid });
+          }
+        });
+        setAllUsers(Array.from(byUid.values()));
+      } catch (err) {
+        console.warn('Users fetch notice:', err);
+      }
     };
     fetchUsers();
   }, [currentUser]);
 
-  // Handle initialChatUser passed from outside (e.g. quick connect in sidebar or user profile)
-  useEffect(() => {
-    if (!initialChatUser || !currentUser || !userProfile) return;
+  // Find an existing 1-on-1 conversation or create a deterministic one (dm_<uid1>_<uid2>)
+  const findOrCreateDirectConversation = async (targetUser: UserProfile): Promise<Conversation | null> => {
+    if (!currentUser || !userProfile) return null;
 
-    const startDirectChat = async () => {
-      // Find existing 1-on-1 conversation
-      const existing = conversations.find(
-        (c) => !c.isGroup && c.participants.includes(initialChatUser.uid)
+    // 1. Check already loaded deduplicated state first
+    const localExisting = conversations.find(
+      (c) => !c.isGroup && c.participants.includes(targetUser.uid)
+    );
+    if (localExisting) {
+      return localExisting;
+    }
+
+    if (creatingChatRef.current) return null;
+    creatingChatRef.current = true;
+
+    try {
+      // 2. Live Firestore check to prevent race conditions across clicks or devices
+      const existingSnap = await getDocs(
+        query(collection(db, 'conversations'), where('participants', 'array-contains', currentUser.uid))
       );
-
-      if (existing) {
-        setSelectedConversation(existing);
-      } else {
-        // Create new conversation
-        const convRef = doc(collection(db, 'conversations'));
-        const newConv: Conversation = {
-          id: convRef.id,
-          participants: [currentUser.uid, initialChatUser.uid],
-          participantDetails: {
-            [currentUser.uid]: {
-              displayName: userProfile.displayName,
-              username: userProfile.username,
-              photoURL: userProfile.photoURL,
-            },
-            [initialChatUser.uid]: {
-              displayName: initialChatUser.displayName,
-              username: initialChatUser.username,
-              photoURL: initialChatUser.photoURL,
-            },
-          },
-          isGroup: false,
-          lastMessage: 'Conversation started',
-          lastMessageSenderId: currentUser.uid,
-          lastMessageAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          createdAt: new Date().toISOString(),
-        };
-
-        await setDoc(convRef, newConv);
-        setSelectedConversation(newConv);
+      const allDocs = existingSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Conversation));
+      const { deduplicated } = deduplicateConversations(allDocs, currentUser.uid);
+      const remoteExisting = deduplicated.find(
+        (c) => !c.isGroup && c.participants.includes(targetUser.uid)
+      );
+      if (remoteExisting) {
+        return remoteExisting;
       }
 
-      onClearInitialChatUser?.();
+      // 3. No conversation exists — create one with deterministic pair ID & pairKey
+      const sortedPair = [currentUser.uid, targetUser.uid].sort();
+      const pairKey = sortedPair.join('_');
+      const convId = `dm_${pairKey}`;
+      const convRef = doc(db, 'conversations', convId);
+
+      const deterministicSnap = await getDoc(convRef).catch(() => null);
+      if (deterministicSnap && deterministicSnap.exists()) {
+        return { id: deterministicSnap.id, ...deterministicSnap.data() } as Conversation;
+      }
+
+      const nowIso = new Date().toISOString();
+      const newConv: Conversation = {
+        id: convId,
+        participants: sortedPair,
+        pairKey,
+        participantDetails: {
+          [currentUser.uid]: {
+            displayName: userProfile.displayName,
+            username: userProfile.username,
+            photoURL: userProfile.photoURL,
+          },
+          [targetUser.uid]: {
+            displayName: targetUser.displayName,
+            username: targetUser.username,
+            photoURL: targetUser.photoURL,
+          },
+        },
+        isGroup: false,
+        lastMessage: 'Conversation started',
+        lastMessageSenderId: currentUser.uid,
+        lastMessageAt: nowIso,
+        updatedAt: nowIso,
+        createdAt: nowIso,
+      };
+
+      await setDoc(convRef, newConv, { merge: true });
+      return newConv;
+    } finally {
+      creatingChatRef.current = false;
+    }
+  };
+
+  // Handle initialChatUser passed from outside — WAIT until conversationsLoaded so we never create a duplicate
+  useEffect(() => {
+    if (!initialChatUser || !currentUser || !userProfile || !conversationsLoaded) return;
+
+    let cancelled = false;
+    const startDirectChat = async () => {
+      try {
+        const conv = await findOrCreateDirectConversation(initialChatUser);
+        if (!cancelled && conv) {
+          setSelectedConversation(conv);
+        }
+      } catch (err) {
+        console.warn('Error opening direct chat:', err);
+      } finally {
+        if (!cancelled) {
+          onClearInitialChatUser?.();
+        }
+      }
     };
 
     startDirectChat();
-  }, [initialChatUser, conversations, currentUser, userProfile]);
+    return () => {
+      cancelled = true;
+    };
+  }, [initialChatUser, conversationsLoaded, currentUser, userProfile]);
 
-  // Listen to messages of selected conversation
+  // Listen to messages of selected conversation (merging all consolidated conversation IDs for the same user pair)
+  const selectedOtherUid =
+    selectedConversation && !selectedConversation.isGroup && currentUser
+      ? selectedConversation.participants.find((p) => p !== currentUser.uid) || ''
+      : '';
+  const activeConversationIdsKey =
+    selectedConversation && !selectedConversation.isGroup && selectedOtherUid && mergedConvIdsByOtherUid[selectedOtherUid]?.length
+      ? mergedConvIdsByOtherUid[selectedOtherUid].join(',')
+      : selectedConversation?.id || '';
+
   useEffect(() => {
-    if (!selectedConversation || !currentUser) {
+    if (!selectedConversation || !currentUser || !activeConversationIdsKey) {
       setMessages([]);
       return;
     }
 
-    const q = query(
-      collection(db, 'conversations', selectedConversation.id, 'messages'),
-      orderBy('createdAt', 'asc')
-    );
+    const convIds = activeConversationIdsKey.split(',').filter(Boolean);
+    const messagesByConvId = new Map<string, Message[]>();
+    const initialLoadMap = new Map<string, boolean>();
+    const unsubs: (() => void)[] = [];
 
-    const unsub = onSnapshot(
-      q,
-      (snapshot) => {
-        const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Message));
-        setMessages(list);
-
-        // Play chime if a new message arrives from the other participant
-        if (snapshot.docChanges().some((ch) => ch.type === 'added' && ch.doc.data().senderId !== currentUser.uid)) {
-          soundEffects.playMessageNotification();
-        }
-
-        // Mark seenBy
-        snapshot.docs.forEach(async (docSnap) => {
-          const msg = docSnap.data() as Message;
-          if (!msg.seenBy?.includes(currentUser.uid)) {
-            try {
-              await updateDoc(docSnap.ref, {
-                seenBy: [...(msg.seenBy || []), currentUser.uid],
-              });
-            } catch (e) {
-              // Non-blocking
-            }
-          }
+    const emitMergedMessages = () => {
+      const uniqueMsgs = new Map<string, Message>();
+      messagesByConvId.forEach((list) => {
+        list.forEach((m) => {
+          const uniqueKey = `${m.conversationId}_${m.id}`;
+          uniqueMsgs.set(uniqueKey, m);
         });
-      },
-      (error) => {
-        console.warn('Messages listener notice:', error?.message || error);
-      }
-    );
+      });
+      const merged = Array.from(uniqueMsgs.values()).sort((a, b) => {
+        const tA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const tB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return tA - tB;
+      });
+      setMessages(merged);
+    };
 
-    return () => unsub();
-  }, [selectedConversation?.id, currentUser]);
+    convIds.forEach((convId) => {
+      const q = query(
+        collection(db, 'conversations', convId, 'messages'),
+        orderBy('createdAt', 'asc')
+      );
+
+      const unsub = onSnapshot(
+        q,
+        (snapshot) => {
+          const list = snapshot.docs.map(
+            (d) => ({ id: d.id, conversationId: convId, ...d.data() } as Message)
+          );
+          messagesByConvId.set(convId, list);
+          emitMergedMessages();
+
+          // Only chime on genuinely newly arriving messages after initial hydration
+          if (initialLoadMap.get(convId)) {
+            if (
+              snapshot
+                .docChanges()
+                .some((ch) => ch.type === 'added' && ch.doc.data().senderId !== currentUser.uid)
+            ) {
+              soundEffects.playMessageNotification();
+            }
+          } else {
+            initialLoadMap.set(convId, true);
+          }
+
+          // Mark seenBy in the exact source conversation subcollection
+          snapshot.docs.forEach(async (docSnap) => {
+            const msg = docSnap.data() as Message;
+            if (!msg.seenBy?.includes(currentUser.uid)) {
+              try {
+                await updateDoc(docSnap.ref, {
+                  seenBy: [...(msg.seenBy || []), currentUser.uid],
+                });
+              } catch {
+                // Non-blocking
+              }
+            }
+          });
+        },
+        (error) => {
+          console.warn('Messages listener notice:', error?.message || error);
+        }
+      );
+
+      unsubs.push(unsub);
+    });
+
+    return () => {
+      unsubs.forEach((fn) => fn());
+    };
+  }, [selectedConversation?.id, activeConversationIdsKey, currentUser]);
 
   // Send Message
   const handleSendMessage = async (e?: React.FormEvent) => {
@@ -364,11 +596,12 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
     }
   };
 
-  // Delete message
-  const handleDeleteMessage = async (messageId: string) => {
+  // Delete message (supports merged historical conversations cleanly)
+  const handleDeleteMessage = async (msg: Message) => {
     if (!selectedConversation) return;
+    const targetConvId = msg.conversationId || selectedConversation.id;
     try {
-      await deleteDoc(doc(db, 'conversations', selectedConversation.id, 'messages', messageId));
+      await deleteDoc(doc(db, 'conversations', targetConvId, 'messages', msg.id));
     } catch (e) {
       console.warn('Error deleting message:', e);
     }
@@ -426,39 +659,13 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
       setGroupName('');
       setSelectedGroupMembers([]);
     } else if (targetUser) {
-      const existing = conversations.find(
-        (c) => !c.isGroup && c.participants.includes(targetUser.uid)
-      );
-
-      if (existing) {
-        setSelectedConversation(existing);
-      } else {
-        const convRef = doc(collection(db, 'conversations'));
-        const newConv: Conversation = {
-          id: convRef.id,
-          participants: [currentUser.uid, targetUser.uid],
-          participantDetails: {
-            [currentUser.uid]: {
-              displayName: userProfile.displayName,
-              username: userProfile.username,
-              photoURL: userProfile.photoURL,
-            },
-            [targetUser.uid]: {
-              displayName: targetUser.displayName,
-              username: targetUser.username,
-              photoURL: targetUser.photoURL,
-            },
-          },
-          isGroup: false,
-          lastMessage: 'Conversation started',
-          lastMessageSenderId: currentUser.uid,
-          lastMessageAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          createdAt: new Date().toISOString(),
-        };
-
-        await setDoc(convRef, newConv);
-        setSelectedConversation(newConv);
+      try {
+        const conv = await findOrCreateDirectConversation(targetUser);
+        if (conv) {
+          setSelectedConversation(conv);
+        }
+      } catch (err) {
+        console.warn('Error starting chat:', err);
       }
       setShowNewChatModal(false);
     }
@@ -495,10 +702,13 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
   const filteredCallHistory = callHistory.filter((call) => {
     if (!callSearchQuery.trim()) return true;
     const q = callSearchQuery.toLowerCase();
+    const callTypeLabel = call.callType || call.type || '';
     return (
       call.callerName?.toLowerCase().includes(q) ||
       call.calleeName?.toLowerCase().includes(q) ||
-      call.durationFormatted?.toLowerCase().includes(q)
+      call.durationFormatted?.toLowerCase().includes(q) ||
+      callTypeLabel.toLowerCase().includes(q) ||
+      call.status?.toLowerCase().includes(q)
     );
   });
 
@@ -656,7 +866,7 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
                   const isMine = m.senderId === currentUser?.uid;
                   return (
                     <div
-                      key={m.id}
+                      key={`${m.conversationId || selectedConversation.id}_${m.id}`}
                       className={`flex flex-col ${isMine ? 'items-end' : 'items-start'} group`}
                     >
                       <div
@@ -697,7 +907,7 @@ export const MessengerView: React.FC<MessengerViewProps> = ({
                         {/* Delete button for author on hover */}
                         {isMine && (
                           <button
-                            onClick={() => handleDeleteMessage(m.id)}
+                            onClick={() => handleDeleteMessage(m)}
                             className="absolute -left-6 top-1/2 -translate-y-1/2 text-slate-400 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer p-1"
                             title="Delete message"
                           >
@@ -1096,23 +1306,50 @@ const MessengerCallItem: React.FC<MessengerCallItemProps> = ({
   onCallBack,
 }) => {
   const isOutgoing = item.callerId === currentUserId;
-  const otherUid = isOutgoing ? item.calleeId : item.callerId;
+  const otherUid = isOutgoing ? (item.receiverId || item.calleeId) : item.callerId;
   const otherName = isOutgoing ? item.calleeName : item.callerName;
   const otherPhoto = isOutgoing ? item.calleePhoto : item.callerPhoto;
   const presence = usePresence(otherUid);
 
-  const isMissed = item.status === 'rejected' || item.status === 'missed';
-  const durationText = item.durationFormatted || formatCallDuration(item.duration);
+  const effectiveType = item.callType || item.type || 'audio';
+  const isVideo = effectiveType === 'video';
+  const rawSeconds = item.durationSeconds ?? item.duration ?? 0;
+  const isRejected = item.status === 'rejected';
+  const isMissed = item.status === 'missed' || item.status === 'cancelled' || (item.status === 'ended' && rawSeconds === 0 && !(item.startedAt ?? item.connectedAt));
+  const isUnanswered = isRejected || isMissed;
+  const durationText = isUnanswered ? '00:00' : (item.durationFormatted || formatCallDuration(rawSeconds));
 
-  const formatCallDate = (timestamp?: string | number) => {
+  const formatTimeOnly = (timestamp?: string | number | null) => {
     if (!timestamp) return '';
-    const date = new Date(timestamp);
-    const now = new Date();
-    const isToday = date.toDateString() === now.toDateString();
-    const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    if (isToday) return `Today, ${timeStr}`;
-    return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${timeStr}`;
+    const d = new Date(timestamp);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
+
+  const primaryTimestamp = item.startedAt || item.connectedAt || item.endedAt || item.createdAt;
+  const dateLabel = (() => {
+    if (!primaryTimestamp) return '';
+    const date = new Date(primaryTimestamp);
+    if (isNaN(date.getTime())) return '';
+    return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  })();
+
+  const startTimeStr = formatTimeOnly(item.startedAt ?? item.connectedAt);
+  const endTimeStr = formatTimeOnly(item.endedAt || item.createdAt);
+  const timeRangeLabel =
+    !isUnanswered && startTimeStr && endTimeStr
+      ? `${startTimeStr} - ${endTimeStr}`
+      : endTimeStr || startTimeStr || '';
+
+  const statusLabel = isRejected
+    ? 'Rejected'
+    : isMissed
+    ? isOutgoing
+      ? 'No Answer'
+      : 'Missed'
+    : 'Answered';
+
+  const directionLabel = isOutgoing ? 'Outgoing' : 'Incoming';
 
   const calleeProfile: UserProfile = {
     id: otherUid,
@@ -1125,8 +1362,8 @@ const MessengerCallItem: React.FC<MessengerCallItemProps> = ({
   };
 
   return (
-    <div className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-100 dark:hover:bg-slate-800/40 transition-colors">
-      <div className="flex items-center gap-3 min-w-0">
+    <div className="p-3.5 flex items-center justify-between gap-2.5 hover:bg-slate-100 dark:hover:bg-slate-800/40 transition-colors">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
         <div className="relative shrink-0">
           <img
             src={otherPhoto || `https://api.dicebear.com/7.x/avataaars/svg?seed=${otherUid}`}
@@ -1141,66 +1378,87 @@ const MessengerCallItem: React.FC<MessengerCallItemProps> = ({
           />
         </div>
 
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 truncate">
             <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
-              {otherName}
+              {otherName || 'Unknown User'}
             </h4>
             <AdminBadge user={{ uid: otherUid }} size="xs" />
           </div>
 
-          <div className="flex items-center gap-1.5 mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-            {/* Status & Direction */}
-            <div className="flex items-center gap-1">
-              {isMissed ? (
-                <>
-                  <PhoneMissed size={12} className="text-rose-500 shrink-0" />
-                  <span className="text-rose-500 font-semibold text-[11px]">Missed</span>
-                </>
+          {/* Line 1: Direction, Call Type (Audio/Video), Status, Duration */}
+          <div className="flex items-center flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+            <span className="inline-flex items-center gap-1">
+              {isUnanswered ? (
+                <PhoneMissed size={11} className="text-rose-500 shrink-0" />
               ) : isOutgoing ? (
-                <>
-                  <PhoneOutgoing size={12} className="text-blue-500 shrink-0" />
-                  <span className="text-blue-500 font-medium text-[11px]">Outgoing</span>
-                </>
+                <PhoneOutgoing size={11} className="text-blue-500 shrink-0" />
               ) : (
-                <>
-                  <PhoneIncoming size={12} className="text-emerald-500 shrink-0" />
-                  <span className="text-emerald-500 font-medium text-[11px]">Incoming</span>
-                </>
+                <PhoneIncoming size={11} className="text-emerald-500 shrink-0" />
               )}
-            </div>
+              <span
+                className={`font-semibold ${
+                  isUnanswered
+                    ? 'text-rose-500'
+                    : isOutgoing
+                    ? 'text-blue-500'
+                    : 'text-emerald-500'
+                }`}
+              >
+                {directionLabel}
+              </span>
+            </span>
 
             <span className="text-slate-300 dark:text-slate-700">•</span>
 
-            {/* Type & Duration */}
-            <span className="font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+            <span className="inline-flex items-center gap-1 text-slate-600 dark:text-slate-300 font-medium">
+              {isVideo ? (
+                <Video size={11} className="text-indigo-500 shrink-0" />
+              ) : (
+                <Phone size={11} className="text-emerald-500 shrink-0" />
+              )}
+              <span>{isVideo ? 'Video' : 'Audio'}</span>
+            </span>
+
+            <span className="text-slate-300 dark:text-slate-700">•</span>
+
+            <span className={isUnanswered ? 'text-rose-500 font-medium' : 'text-emerald-600 dark:text-emerald-400 font-medium'}>
+              {statusLabel}
+            </span>
+
+            <span className="text-slate-300 dark:text-slate-700">•</span>
+
+            <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">
               {durationText}
             </span>
-
-            <span className="text-slate-300 dark:text-slate-700">•</span>
-
-            <span className="text-[10px] text-slate-400 truncate">
-              {formatCallDate(item.createdAt || item.endedAt)}
-            </span>
           </div>
+
+          {/* Line 2: Date & Start/End Time */}
+          {(dateLabel || timeRangeLabel) && (
+            <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-slate-400 truncate">
+              {dateLabel && <span>{dateLabel}</span>}
+              {dateLabel && timeRangeLabel && <span>•</span>}
+              {timeRangeLabel && <span>{timeRangeLabel}</span>}
+            </div>
+          )}
         </div>
       </div>
 
       {/* Call-Back Action Buttons */}
-      <div className="flex items-center gap-1 shrink-0">
+      <div className="flex items-center gap-0.5 shrink-0">
         <button
           onClick={() => onCallBack(calleeProfile, 'audio')}
           className="p-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-950/30 dark:hover:text-emerald-400 transition-colors cursor-pointer"
           title={`Audio call ${otherName}`}
         >
-          <Phone size={16} />
+          <Phone size={15} />
         </button>
         <button
           onClick={() => onCallBack(calleeProfile, 'video')}
           className="p-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-950/30 dark:hover:text-indigo-400 transition-colors cursor-pointer"
           title={`Video call ${otherName}`}
         >
-          <Video size={16} />
+          <Video size={15} />
         </button>
       </div>
     </div>
