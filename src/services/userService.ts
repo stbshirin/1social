@@ -8,7 +8,8 @@ import {
   CollectionReference,
   DocumentReference,
 } from 'firebase/firestore';
-import { db } from '../firebase/config';
+import { ref as rtdbRef, update as rtdbUpdate } from 'firebase/database';
+import { db, rtdb } from '../firebase/config';
 import { UserProfile } from '../types';
 
 // The primary collections used for the separate socialApp user profiles
@@ -189,7 +190,7 @@ export async function setUserVerifiedStatus(
         updatedAt: nowIso,
       };
 
-  // Primary authoritative update in socialApp_users/{uid}
+  // Primary authoritative update in Firestore socialApp_users/{uid}
   const directRef = getSocialUserDocRef(targetUid);
   await updateDoc(directRef, payload);
 
@@ -199,5 +200,21 @@ export async function setUserVerifiedStatus(
     await setDoc(subRef, payload, { merge: true });
   } catch {
     // Non-blocking if secondary subdoc hasn't been initialized
+  }
+
+  // Non-blocking sync to Firebase Realtime Database users/{uid}
+  try {
+    const rtdbPayload = {
+      isVerified,
+      verifiedAt: isVerified ? nowIso : null,
+      verifiedBy: isVerified ? adminUid : null,
+      updatedAt: nowIso,
+    };
+    await Promise.race([
+      rtdbUpdate(rtdbRef(rtdb, `users/${targetUid}`), rtdbPayload),
+      new Promise((resolve) => setTimeout(resolve, 1500)),
+    ]);
+  } catch {
+    // Non-blocking if RTDB is unavailable
   }
 }

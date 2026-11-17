@@ -63,7 +63,16 @@ export const AdminDashboard: React.FC = () => {
     const unsub = onSnapshot(
       getSocialUsersCollection(),
       (snap) => {
-        setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() } as UserProfile)));
+        setUsers(
+          snap.docs.map((d) => {
+            const data = d.data();
+            return {
+              ...data,
+              id: d.id,
+              uid: ((data.uid as string) || d.id).trim(),
+            } as UserProfile;
+          })
+        );
       },
       (error) => {
         console.warn('Admin users listener notice:', error?.message || error);
@@ -143,10 +152,11 @@ export const AdminDashboard: React.FC = () => {
   const handleConfirmVerifyAction = async () => {
     if (!verifyConfirmTarget || !currentUser || !isMainAdmin) return;
     const { user: targetUser, nextVerified } = verifyConfirmTarget;
+    const targetUid = targetUser.uid || targetUser.id;
     setVerifyLoading(true);
     setVerifyFeedback(null);
     try {
-      await setUserVerifiedStatus(targetUser.uid, nextVerified, currentUser.uid);
+      await setUserVerifiedStatus(targetUid, nextVerified, currentUser.uid);
       setVerifyFeedback({
         type: 'success',
         message: nextVerified
@@ -298,7 +308,7 @@ export const AdminDashboard: React.FC = () => {
               <p className="text-[11px] text-slate-400">
                 {isMainAdmin
                   ? 'Main Admin authority active: You can grant or remove Blue Verified Badges for any account.'
-                  : 'Only Main Admin (UID: UI28ofvzB7cjNJvCG0DvYgbCu9J3) can grant or remove Blue Verified Badges.'}
+                  : `Only Main Admin (UID: ${MAIN_ADMIN_UID}) can grant or remove Blue Verified Badges. Current UID: ${currentUser?.uid || 'Unknown'}`}
               </p>
             </div>
             <div className="relative w-full sm:w-64">
@@ -336,11 +346,11 @@ export const AdminDashboard: React.FC = () => {
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-400 uppercase border-b border-slate-200 dark:border-slate-800 font-semibold">
                 <tr>
-                  <th className="p-4">User</th>
-                  <th className="p-4">Firebase UID</th>
-                  <th className="p-4">Role & Status</th>
-                  <th className="p-4">Verified Status</th>
-                  <th className="p-4 text-right">Actions</th>
+                  <th className="px-3.5 py-3">User</th>
+                  <th className="px-3.5 py-3">Firebase UID</th>
+                  <th className="px-3.5 py-3">Role & Status</th>
+                  <th className="px-3.5 py-3">Verified Status</th>
+                  <th className="px-3.5 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
@@ -357,16 +367,24 @@ export const AdminDashboard: React.FC = () => {
                   })
                   .map((u) => {
                     const isVerifiedUser = u.isVerified === true;
+                    const verifiedDateLabel =
+                      isVerifiedUser && u.verifiedAt
+                        ? new Date(u.verifiedAt).toLocaleDateString([], {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })
+                        : null;
                     return (
                       <tr key={u.uid} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
-                        <td className="p-4">
-                          <div className="flex items-center gap-3">
+                        <td className="px-3.5 py-3">
+                          <div className="flex items-center gap-2.5">
                             <img
                               src={u.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.uid}`}
                               alt={u.displayName}
                               className="w-9 h-9 rounded-full object-cover shrink-0 border border-slate-200 dark:border-slate-700"
                             />
-                            <div className="min-w-0">
+                            <div className="min-w-0 max-w-[170px]">
                               <div className="flex items-center gap-1.5">
                                 <p className="font-bold text-slate-900 dark:text-white truncate">
                                   {u.displayName}
@@ -379,12 +397,15 @@ export const AdminDashboard: React.FC = () => {
                             </div>
                           </div>
                         </td>
-                        <td className="p-4">
-                          <code className="text-[10px] font-mono px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 select-all break-all">
+                        <td className="px-3.5 py-3">
+                          <code
+                            title={u.uid}
+                            className="inline-block max-w-[130px] truncate text-[10px] font-mono px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 select-all align-middle"
+                          >
                             {u.uid}
                           </code>
                         </td>
-                        <td className="p-4">
+                        <td className="px-3.5 py-3">
                           <div className="flex flex-wrap items-center gap-1.5">
                             <span
                               className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
@@ -406,20 +427,27 @@ export const AdminDashboard: React.FC = () => {
                             </span>
                           </div>
                         </td>
-                        <td className="p-4">
+                        <td className="px-3.5 py-3 whitespace-nowrap">
                           {isVerifiedUser ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/10 text-sky-500 border border-sky-500/20">
-                              <BadgeCheck size={12} />
-                              <span>Verified</span>
-                            </span>
+                            <div className="flex flex-col items-start gap-0.5">
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/10 text-sky-500 border border-sky-500/20">
+                                <BadgeCheck size={12} />
+                                <span>Verified</span>
+                              </span>
+                              {verifiedDateLabel && (
+                                <span className="text-[9px] text-slate-400 pl-1">
+                                  {verifiedDateLabel}
+                                </span>
+                              )}
+                            </div>
                           ) : (
                             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-400">
                               Not Verified
                             </span>
                           )}
                         </td>
-                        <td className="p-4 text-right">
-                          <div className="inline-flex items-center justify-end gap-2 flex-wrap">
+                        <td className="px-3.5 py-3 text-right">
+                          <div className="inline-flex items-center justify-end gap-1.5 flex-wrap">
                             {isMainAdmin ? (
                               isVerifiedUser ? (
                                 <button
@@ -427,7 +455,7 @@ export const AdminDashboard: React.FC = () => {
                                   onClick={() =>
                                     setVerifyConfirmTarget({ user: u, nextVerified: false })
                                   }
-                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl font-semibold bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-950/50 transition-colors cursor-pointer"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl font-semibold whitespace-nowrap bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-950/50 transition-colors cursor-pointer"
                                   title="Remove Blue Verified Badge"
                                 >
                                   <XCircle size={13} />
@@ -439,7 +467,7 @@ export const AdminDashboard: React.FC = () => {
                                   onClick={() =>
                                     setVerifyConfirmTarget({ user: u, nextVerified: true })
                                   }
-                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl font-semibold bg-sky-600 hover:bg-sky-500 text-white shadow-xs transition-colors cursor-pointer"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl font-semibold whitespace-nowrap bg-sky-600 hover:bg-sky-500 text-white shadow-xs transition-colors cursor-pointer"
                                   title="Give Blue Verified Badge"
                                 >
                                   <BadgeCheck size={13} />
@@ -448,7 +476,7 @@ export const AdminDashboard: React.FC = () => {
                               )
                             ) : (
                               <span
-                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-400 text-[10px] font-semibold"
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-400 text-[10px] font-semibold"
                                 title="Only Main Admin can modify Verified Badges"
                               >
                                 <Lock size={11} />
@@ -459,7 +487,7 @@ export const AdminDashboard: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => toggleSuspendUser(u)}
-                              className={`px-3 py-1.5 rounded-xl font-semibold transition-colors cursor-pointer ${
+                              className={`px-2.5 py-1.5 rounded-xl font-semibold whitespace-nowrap transition-colors cursor-pointer ${
                                 u.isSuspended
                                   ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
                                   : 'bg-rose-50 dark:bg-rose-950/30 text-rose-600 hover:bg-rose-100'
@@ -501,8 +529,9 @@ export const AdminDashboard: React.FC = () => {
               .map((p) => (
                 <div key={p.id} className="p-4 flex items-start justify-between gap-4">
                   <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-1.5 mb-1">
                       <span className="font-bold text-slate-900 dark:text-white">{p.authorName}</span>
+                      <VerifiedBadge user={{ uid: p.authorId }} size="xs" />
                       <span className="text-[10px] text-slate-400">@{p.authorUsername}</span>
                     </div>
                     <p className="text-xs text-slate-700 dark:text-slate-300 line-clamp-2">{p.content}</p>
