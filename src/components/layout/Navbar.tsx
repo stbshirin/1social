@@ -19,16 +19,17 @@ export const Navbar: React.FC<NavbarProps> = ({
   searchQuery,
   setSearchQuery,
 }) => {
-  const { userProfile, isAdmin, logOut } = useAuth();
+  const { userProfile, isAdmin, logOut, isLoggingOut: authLoggingOut } = useAuth();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const loggingOut = isLoggingOut || authLoggingOut;
 
   const handleLogOut = async () => {
-    if (isLoggingOut) return;
+    if (loggingOut) return;
     setIsLoggingOut(true);
     try {
       await logOut();
     } catch (err) {
-      console.error('Logout error:', err);
+      console.error('Navbar logout error:', err);
     } finally {
       setIsLoggingOut(false);
     }
@@ -108,14 +109,14 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button
             type="button"
             onClick={handleLogOut}
-            disabled={isLoggingOut}
+            disabled={loggingOut}
             className="flex items-center gap-1.5 p-2 sm:px-3 sm:py-1.5 rounded-full text-slate-600 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer disabled:opacity-50"
             title="Log Out"
             aria-label="Log Out"
           >
             <LogOut size={20} />
             <span className="text-xs font-semibold hidden sm:inline">
-              {isLoggingOut ? 'Logging out...' : 'Log Out'}
+              {loggingOut ? 'Logging out...' : 'Log Out'}
             </span>
           </button>
 

@@ -120,21 +120,27 @@ export async function requestFCMToken(userId: string): Promise<string | null> {
 }
 
 /**
- * Removes the current device's FCM token on logout
+ * Removes the current device's FCM token on logout (bounded so it never blocks signOut)
  */
 export async function removeFCMToken(userId: string): Promise<void> {
   if (!userId) return;
 
   try {
     if (currentDeviceToken) {
-      const docId = getTokenDocId(currentDeviceToken);
-      await deleteDoc(doc(db, 'fcmTokens', docId)).catch(() => {});
-
-      const messaging = await getFCMInstance();
-      if (messaging) {
-        await deleteToken(messaging).catch(() => {});
-      }
+      const tokenToClear = currentDeviceToken;
       currentDeviceToken = null;
+      const docId = getTokenDocId(tokenToClear);
+
+      await Promise.race([
+        (async () => {
+          await deleteDoc(doc(db, 'fcmTokens', docId)).catch(() => {});
+          const messaging = await getFCMInstance();
+          if (messaging) {
+            await deleteToken(messaging).catch(() => {});
+          }
+        })(),
+        new Promise<void>((resolve) => setTimeout(resolve, 800)),
+      ]);
     }
   } catch (err) {
     console.warn('FCM token deletion notice:', err);

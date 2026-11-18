@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   User,
   onAuthStateChanged,
@@ -28,12 +28,20 @@ import {
 import { setExplicitOffline } from '../services/presenceService';
 import { requestFCMToken, removeFCMToken } from '../services/fcmService';
 
+export interface AuthNotice {
+  type: 'success' | 'error';
+  message: string;
+}
+
 interface AuthContextType {
   currentUser: User | null;
   userProfile: UserProfile | null;
   isAdmin: boolean;
   isMainAdmin: boolean;
   loading: boolean;
+  isLoggingOut: boolean;
+  authNotice: AuthNotice | null;
+  clearAuthNotice: () => void;
   tokenServiceDisabled: boolean;
   signUpWithEmail: (email: string, pass: string, name: string, username: string) => Promise<void>;
   logInWithEmail: (email: string, pass: string) => Promise<void>;
@@ -55,7 +63,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
+  const [isLoggingOut, setIsLoggingOut] = useState<boolean>(false);
+  const isLoggingOutRef = useRef<boolean>(false);
+  const [authNotice, setAuthNotice] = useState<AuthNotice | null>(null);
   const [tokenServiceDisabled, setTokenServiceDisabled] = useState<boolean>(false);
+
+  const clearAuthNotice = () => setAuthNotice(null);
+
+  useEffect(() => {
+    if (!authNotice) return;
+    const timer = setTimeout(() => setAuthNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [authNotice]);
 
   /**
    * Sync or create user profile specifically at the separate socialApp paths
@@ -204,6 +223,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signUpWithEmail = async (email: string, pass: string, name: string, username: string) => {
+    setAuthNotice(null);
     const cred = await createUserWithEmailAndPassword(auth, email, pass);
     await updateProfile(cred.user, {
       displayName: name,
@@ -213,11 +233,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logInWithEmail = async (email: string, pass: string) => {
+    setAuthNotice(null);
     await signInWithEmailAndPassword(auth, email, pass);
   };
 
   // Google Sign-In: works for all previously registered accounts and new registrations
   const logInWithGoogle = async () => {
+    setAuthNotice(null);
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
     const result = await signInWithPopup(auth, provider);
@@ -225,15 +247,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logOut = async () => {
-    if (currentUser?.uid) {
-      await Promise.all([
-        setExplicitOffline(currentUser.uid).catch(() => {}),
-        removeFCMToken(currentUser.uid).catch(() => {}),
-      ]);
+    if (isLoggingOutRef.current) return;
+    isLoggingOutRef.current = true;
+    setIsLoggingOut(true);
+    setAuthNotice(null);
+
+    try {
+      const activeUid = auth.currentUser?.uid || currentUser?.uid;
+      if (activeUid) {
+        // Bounded cleanup so slow/offline RTDB or FCM never blocks Firebase signOut(auth)
+        await Promise.race([
+          Promise.all([
+            setExplicitOffline(activeUid).catch(() => {}),
+            removeFCMToken(activeUid).catch(() => {}),
+          ]),
+          new Promise<void>((resolve) => setTimeout(resolve, 800)),
+        ]);
+      }
+
+      await signOut(auth);
+
+      if (auth.currentUser !== null) {
+        throw new Error('Firebase authentication session did not clear after signOut.');
+      }
+
+      setCurrentUser(null);
+      setUserProfile(null);
+      setIsAdmin(false);
+      setAuthNotice({
+        type: 'success',
+        message: 'Logged out successfully',
+      });
+    } catch (error: any) {
+      console.error('Firebase signOut error:', error);
+      setAuthNotice({
+        type: 'error',
+        message: error?.message ? `Log out failed: ${error.message}` : 'Log out failed. Please try again.',
+      });
+      throw error;
+    } finally {
+      isLoggingOutRef.current = false;
+      setIsLoggingOut(false);
     }
-    await signOut(auth);
-    setUserProfile(null);
-    setIsAdmin(false);
   };
 
   const resetPassword = async (email: string) => {
@@ -289,6 +344,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isAdmin,
         isMainAdmin: ((auth.currentUser?.uid || currentUser?.uid) ?? '').trim() === MAIN_ADMIN_UID,
         loading,
+        isLoggingOut,
+        authNotice,
+        clearAuthNotice,
         tokenServiceDisabled,
         signUpWithEmail,
         logInWithEmail,

@@ -27,7 +27,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   unreadNotificationsCount,
   openCreatePostModal,
 }) => {
-  const { userProfile, isAdmin, logOut } = useAuth();
+  const { userProfile, isAdmin, logOut, isLoggingOut } = useAuth();
 
   const navItems = [
     { id: 'feed', label: 'Feed', icon: Home },
@@ -109,9 +109,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           </div>
           <button
-            onClick={logOut}
-            className="p-2 rounded-xl text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer"
+            type="button"
+            onClick={() => {
+              void logOut().catch(() => {});
+            }}
+            disabled={isLoggingOut}
+            className="p-2 rounded-xl text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer disabled:opacity-50"
             title="Log Out"
+            aria-label="Log Out"
           >
             <LogOut size={18} />
           </button>

@@ -100,29 +100,50 @@ async function syncFirestorePresence(uid: string, isOnline: boolean): Promise<vo
 }
 
 /**
- * Explicitly marks a user offline in Firestore and RTDB (e.g. on logout)
+ * Explicitly marks a user offline in Firestore and RTDB (e.g. on logout).
+ * Bounded by a short timeout so offline/unprovisioned RTDB never blocks signOut.
  */
 export async function setExplicitOffline(uid: string): Promise<void> {
   if (!uid) return;
-  clearAllTabs(uid);
 
-  try {
-    await syncFirestorePresence(uid, false);
-
-    // Also update RTDB if reachable
+  if (activePresenceCleanup) {
+    const cleanup = activePresenceCleanup;
+    activePresenceCleanup = null;
     try {
-      const stateRef = ref(rtdb, `status/${uid}/state`);
-      const lastSeenRef = ref(rtdb, `status/${uid}/lastSeen`);
-      const connectionsRef = ref(rtdb, `status/${uid}/connections`);
-
-      await Promise.all([
-        remove(connectionsRef).catch(() => {}),
-        set(stateRef, 'offline').catch(() => {}),
-        set(lastSeenRef, rtdbServerTimestamp()).catch(() => {}),
-      ]);
+      cleanup();
     } catch {
       // Non-blocking
     }
+  }
+
+  clearAllTabs(uid);
+
+  const timeoutPromise = (ms: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  try {
+    const firestorePromise = syncFirestorePresence(uid, false).catch(() => {});
+
+    const rtdbPromise = (async () => {
+      try {
+        const stateRef = ref(rtdb, `status/${uid}/state`);
+        const lastSeenRef = ref(rtdb, `status/${uid}/lastSeen`);
+        const connectionsRef = ref(rtdb, `status/${uid}/connections`);
+
+        await Promise.all([
+          remove(connectionsRef).catch(() => {}),
+          set(stateRef, 'offline').catch(() => {}),
+          set(lastSeenRef, rtdbServerTimestamp()).catch(() => {}),
+        ]);
+      } catch {
+        // Non-blocking
+      }
+    })();
+
+    await Promise.race([
+      Promise.all([firestorePromise, rtdbPromise]),
+      timeoutPromise(800),
+    ]);
   } catch (err) {
     console.warn('Error setting explicit offline state:', err);
   }

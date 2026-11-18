@@ -22,10 +22,19 @@ import { setupUserPresence } from './services/presenceService';
 import { UserProfile } from './types';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from './firebase/config';
-import { Sparkles, Ban, LogOut } from 'lucide-react';
+import { Sparkles, Ban, LogOut, CheckCircle2, AlertCircle, X } from 'lucide-react';
 
 const MainApp: React.FC = () => {
-  const { currentUser, userProfile, loading, logOut, tokenServiceDisabled } = useAuth();
+  const {
+    currentUser,
+    userProfile,
+    loading,
+    isLoggingOut,
+    authNotice,
+    clearAuthNotice,
+    logOut,
+    tokenServiceDisabled,
+  } = useAuth();
   const [activeTab, setActiveTab] = useState('feed');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
@@ -46,6 +55,15 @@ const MainApp: React.FC = () => {
   useEffect(() => {
     document.documentElement.classList.add('dark');
   }, []);
+
+  // Reset navigation targets when signed out
+  useEffect(() => {
+    if (!currentUser) {
+      setActiveTab('feed');
+      setTargetProfileId(null);
+      setInitialChatUser(null);
+    }
+  }, [currentUser]);
 
   // Set up Firebase Realtime Database Presence
   useEffect(() => {
@@ -74,10 +92,38 @@ const MainApp: React.FC = () => {
     return () => unsub();
   }, [currentUser]);
 
+  const authNoticeBanner = authNotice ? (
+    <div
+      role="status"
+      aria-live="polite"
+      className={`fixed top-4 right-4 z-[100] max-w-sm flex items-center gap-2.5 px-4 py-3 rounded-2xl border shadow-2xl backdrop-blur-md text-xs font-semibold ${
+        authNotice.type === 'success'
+          ? 'bg-emerald-950/95 border-emerald-500/40 text-emerald-200'
+          : 'bg-rose-950/95 border-rose-500/40 text-rose-200'
+      }`}
+    >
+      {authNotice.type === 'success' ? (
+        <CheckCircle2 size={16} className="shrink-0 text-emerald-400" />
+      ) : (
+        <AlertCircle size={16} className="shrink-0 text-rose-400" />
+      )}
+      <span className="flex-1">{authNotice.message}</span>
+      <button
+        type="button"
+        onClick={clearAuthNotice}
+        className="opacity-70 hover:opacity-100 p-0.5 cursor-pointer"
+        aria-label="Dismiss notification"
+      >
+        <X size={14} />
+      </button>
+    </div>
+  ) : null;
+
   // Loading state
   if (loading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-950 text-white">
+        {authNoticeBanner}
         <div className="w-14 h-14 rounded-2xl bg-indigo-600 font-black text-2xl flex items-center justify-center shadow-lg shadow-indigo-500/30 animate-pulse mb-4">
           1
         </div>
@@ -88,13 +134,19 @@ const MainApp: React.FC = () => {
 
   // If not authenticated, show Auth Modal
   if (!currentUser) {
-    return <AuthModal />;
+    return (
+      <>
+        {authNoticeBanner}
+        <AuthModal />
+      </>
+    );
   }
 
   // Account Suspended Screen
   if (userProfile?.isSuspended) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-slate-950 text-white text-center">
+        {authNoticeBanner}
         <div className="w-16 h-16 rounded-full bg-rose-500/10 text-rose-500 flex items-center justify-center mb-4">
           <Ban size={36} />
         </div>
@@ -103,11 +155,15 @@ const MainApp: React.FC = () => {
           Your account has been suspended for violating our platform community guidelines. Please reach out to administrative support.
         </p>
         <button
-          onClick={logOut}
-          className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold cursor-pointer"
+          type="button"
+          disabled={isLoggingOut}
+          onClick={() => {
+            void logOut().catch(() => {});
+          }}
+          className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
         >
           <LogOut size={16} />
-          <span>Sign Out</span>
+          <span>{isLoggingOut ? 'Signing out...' : 'Sign Out'}</span>
         </button>
       </div>
     );
@@ -125,6 +181,7 @@ const MainApp: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans transition-colors pb-16 lg:pb-0">
+      {authNoticeBanner}
       {tokenServiceDisabled && <TokenServiceNotice />}
       {/* Top Navbar */}
       <Navbar
