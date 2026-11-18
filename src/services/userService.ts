@@ -197,7 +197,7 @@ export async function setUserVerifiedStatus(
   // Best-effort sync to hierarchical socialApp/app/users/{uid}
   try {
     const subRef = getSocialUserSubDocRef(targetUid);
-    await setDoc(subRef, payload, { merge: true });
+    await updateDoc(subRef, payload);
   } catch {
     // Non-blocking if secondary subdoc hasn't been initialized
   }

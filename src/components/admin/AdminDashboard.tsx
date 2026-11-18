@@ -23,7 +23,7 @@ import {
   deleteDoc,
   serverTimestamp,
 } from 'firebase/firestore';
-import { db } from '../../firebase/config';
+import { db, auth } from '../../firebase/config';
 import { useAuth, MAIN_ADMIN_UID } from '../../context/AuthContext';
 import { UserProfile, Post, ReportItem, CallSession } from '../../types';
 import {
@@ -35,7 +35,8 @@ import { VerifiedBadge } from '../common/VerifiedBadge';
 
 export const AdminDashboard: React.FC = () => {
   const { isAdmin, currentUser } = useAuth();
-  const isMainAdmin = currentUser?.uid === MAIN_ADMIN_UID;
+  const firebaseAuthUid = (auth.currentUser?.uid || currentUser?.uid || '').trim();
+  const isMainAdmin = firebaseAuthUid === MAIN_ADMIN_UID;
   const [activeTab, setActiveTab] = useState<'users' | 'posts' | 'reports' | 'calls'>('users');
 
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -150,13 +151,26 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const handleConfirmVerifyAction = async () => {
-    if (!verifyConfirmTarget || !currentUser || !isMainAdmin) return;
+    if (!verifyConfirmTarget || !isMainAdmin || firebaseAuthUid !== MAIN_ADMIN_UID) return;
     const { user: targetUser, nextVerified } = verifyConfirmTarget;
-    const targetUid = targetUser.uid || targetUser.id;
+    const targetUid = (targetUser.id || targetUser.uid || '').trim();
     setVerifyLoading(true);
     setVerifyFeedback(null);
     try {
-      await setUserVerifiedStatus(targetUid, nextVerified, currentUser.uid);
+      await setUserVerifiedStatus(targetUid, nextVerified, firebaseAuthUid);
+      const nowIso = new Date().toISOString();
+      setUsers((prev) =>
+        prev.map((u) =>
+          (u.id || u.uid) === targetUid
+            ? {
+                ...u,
+                isVerified: nextVerified,
+                verifiedAt: nextVerified ? nowIso : null,
+                verifiedBy: nextVerified ? firebaseAuthUid : null,
+              }
+            : u
+        )
+      );
       setVerifyFeedback({
         type: 'success',
         message: nextVerified
@@ -307,8 +321,8 @@ export const AdminDashboard: React.FC = () => {
               </h3>
               <p className="text-[11px] text-slate-400">
                 {isMainAdmin
-                  ? 'Main Admin authority active: You can grant or remove Blue Verified Badges for any account.'
-                  : `Only Main Admin (UID: ${MAIN_ADMIN_UID}) can grant or remove Blue Verified Badges. Current UID: ${currentUser?.uid || 'Unknown'}`}
+                  ? `Main Admin UID verified (${firebaseAuthUid}): You can grant or remove Blue Verified Badges for any account.`
+                  : `Verified Badge control locked. Required Main Admin UID: ${MAIN_ADMIN_UID} • Current Firebase Auth UID: ${firebaseAuthUid || 'Unknown'}`}
               </p>
             </div>
             <div className="relative w-full sm:w-64">
@@ -322,6 +336,30 @@ export const AdminDashboard: React.FC = () => {
               />
             </div>
           </div>
+
+          {!isMainAdmin && (
+            <div className="mx-4 mt-3 px-4 py-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-start gap-2">
+                <Lock size={15} className="shrink-0 mt-0.5 text-amber-400" />
+                <div>
+                  <p className="font-bold text-amber-200">
+                    Read-only Verification Controls (Authenticated UID does not match Main Admin UID)
+                  </p>
+                  <p className="text-[11px] text-amber-200/80 mt-0.5">
+                    Your current Firebase Auth UID in this project is{' '}
+                    <code className="px-1.5 py-0.5 rounded bg-black/30 font-mono select-all">
+                      {firebaseAuthUid || 'none'}
+                    </code>
+                    , whereas Main Admin authority is strictly bound to UID{' '}
+                    <code className="px-1.5 py-0.5 rounded bg-black/30 font-mono select-all">
+                      {MAIN_ADMIN_UID}
+                    </code>
+                    .
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {verifyFeedback && (
             <div

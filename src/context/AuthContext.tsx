@@ -129,7 +129,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
+    let unsubscribeProfile: (() => void) | null = null;
+
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      if (unsubscribeProfile) {
+        unsubscribeProfile();
+        unsubscribeProfile = null;
+      }
+
       setCurrentUser(user);
       if (user) {
         // Probe token service
@@ -146,7 +153,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await syncSocialUserProfile(user);
 
         // Listen for real-time updates on the separate socialApp profile
-        let unsubscribeProfile: (() => void) | null = null;
         try {
           const userRef = getSocialUserDocRef(user.uid);
           unsubscribeProfile = onSnapshot(
@@ -176,11 +182,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         setLoading(false);
-        return () => {
-          if (unsubscribeProfile) {
-            unsubscribeProfile();
-          }
-        };
       } else {
         setUserProfile(null);
         setIsAdmin(false);
@@ -188,7 +189,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     });
 
-    return () => unsubscribeAuth();
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeProfile) {
+        unsubscribeProfile();
+        unsubscribeProfile = null;
+      }
+    };
   }, []);
 
   const requestPushPermissions = async (): Promise<string | null> => {
@@ -280,7 +287,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         currentUser,
         userProfile,
         isAdmin,
-        isMainAdmin: currentUser?.uid === MAIN_ADMIN_UID,
+        isMainAdmin: ((auth.currentUser?.uid || currentUser?.uid) ?? '').trim() === MAIN_ADMIN_UID,
         loading,
         tokenServiceDisabled,
         signUpWithEmail,
